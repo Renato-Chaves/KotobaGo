@@ -62,9 +62,12 @@ STORY RULES:
 - Every segment must end with the learner facing a concrete situation that requires them to act or speak.
   The learner should know exactly what they need to respond to — a question asked of them, a decision to make,
   someone waiting for their reply. Never end on passive observation.
-- Write 3–5 sentences per segment. Keep it tight — end at the moment of decision, not after it.
-- The suggested choices must be things the learner could actually say or do in that moment
-  (e.g. their reply to a question, what they order, how they greet someone).
+- Write 5–8 sentences per segment. Develop the scene — describe reactions, environment, other characters —
+  before arriving at the moment of decision. Make each segment feel like a satisfying story beat.
+- The suggested choices must be specific, natural Japanese phrases the learner could realistically say
+  in that exact moment. Not descriptions of actions — actual dialogue or speech.
+  Good: 「コーヒーをください。」 Bad: "order coffee" or "コーヒーを注文する"
+- Choices should vary in politeness, formality, or nuance so the learner practices different registers.
 - Make choices consequential — different politeness levels or grammar forms when appropriate.
 - Never break the narrative to explain grammar or translate — stay in the story world.
 - Do not correct the learner's input in-line.
@@ -72,8 +75,8 @@ STORY RULES:
 
 OUTPUT FORMAT — respond ONLY with valid JSON, no markdown, no extra text:
 {{
-  "story_text": "story segment in Japanese",
-  "choices": ["what the learner could say/do — in Japanese", "alternative response — in Japanese", "optional third option"]
+  "story_text": "story segment in Japanese (5–8 sentences)",
+  "choices": ["「actual Japanese phrase the learner would say」", "「alternative with different politeness/nuance」", "「optional third option」"]
 }}"""
 
 

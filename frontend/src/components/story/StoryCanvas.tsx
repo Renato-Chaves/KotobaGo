@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
 import type { DifficultyHint, FuriganaMode, StoryResponse, Token } from "@/lib/types";
@@ -13,7 +13,8 @@ import { TokenSpan } from "./TokenSpan";
 // Types
 // ---------------------------------------------------------------------------
 
-interface StorySegment {
+interface StoryTurn {
+  type: "story";
   tokens: Token[];
   choices: string[];
   contextPct: number;
@@ -21,34 +22,47 @@ interface StorySegment {
   totalWords: number;
 }
 
+interface UserTurn {
+  type: "user";
+  text: string;
+}
+
+type Turn = StoryTurn | UserTurn;
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export function StoryCanvas() {
-  const [segments, setSegments] = useState<StorySegment[]>([]);
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [furiganaMode, setFuriganaMode] = useState<FuriganaMode>("full");
   const [selectedToken, setSelectedToken] = useState<Token | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingHint, setPendingHint] = useState<DifficultyHint | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-  const latestSegment = segments[segments.length - 1] ?? null;
+  const latestStory = [...turns].reverse().find((t): t is StoryTurn => t.type === "story") ?? null;
+
+  // Auto-scroll to bottom on new turns
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [turns, loading]);
 
   // --- Start a new story ---
 
   const handleStart = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setSegments([]);
+    setTurns([]);
     setSessionId(null);
     setSelectedToken(null);
 
     try {
       const res: StoryResponse = await api.startStory({ theme: "日常生活" });
       setSessionId(res.session_id);
-      setSegments([toSegment(res)]);
+      setTurns([toStoryTurn(res)]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start story");
     } finally {
@@ -56,7 +70,7 @@ export function StoryCanvas() {
     }
   }, []);
 
-  // --- Continue with user input (free-form or suggestion) ---
+  // --- Continue with user input ---
 
   const handleSubmit = useCallback(async (input: string) => {
     if (!sessionId) return;
@@ -64,21 +78,26 @@ export function StoryCanvas() {
     setError(null);
     setSelectedToken(null);
 
+    // Show user message immediately, before the API responds
+    setTurns((prev) => [...prev, { type: "user", text: input }]);
+
     try {
       const res: StoryResponse = await api.continueStory(sessionId, {
         user_input: input,
         difficulty_hint: pendingHint ?? undefined,
       });
       setPendingHint(null);
-      setSegments((prev) => [...prev, toSegment(res)]);
+      setTurns((prev) => [...prev, toStoryTurn(res)]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to continue story");
+      // Remove the optimistic user turn on failure
+      setTurns((prev) => prev.slice(0, -1));
     } finally {
       setLoading(false);
     }
   }, [sessionId, pendingHint]);
 
-  // --- Difficulty hint — applied on the NEXT choice ---
+  // --- Difficulty hint — applied on the next submission ---
 
   const handleDifficultyHint = useCallback((hint: DifficultyHint) => {
     setPendingHint(hint);
@@ -91,10 +110,10 @@ export function StoryCanvas() {
   }, []);
 
   // ---------------------------------------------------------------------------
-  // Render
+  // Render — empty state
   // ---------------------------------------------------------------------------
 
-  if (segments.length === 0) {
+  if (turns.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen gap-6">
         <h1 className="text-3xl font-bold tracking-tight">ことばGo</h1>
@@ -115,21 +134,24 @@ export function StoryCanvas() {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Render — chat view
+  // ---------------------------------------------------------------------------
+
   return (
     <div className="flex min-h-screen">
-      {/* --- Main story area --- */}
-      <div className="flex-1 max-w-2xl mx-auto px-6 py-10 flex flex-col gap-8">
+      {/* --- Main chat area --- */}
+      <div className="flex-1 flex flex-col max-w-2xl mx-auto px-4 py-6">
 
-        {/* Top bar */}
-        <div className="flex items-center justify-between">
+        {/* Top bar — sticky */}
+        <div className="flex items-center justify-between mb-6 pb-4 border-b border-zinc-800">
           <button
             onClick={handleStart}
             className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
           >
             ← New Story
           </button>
-          <div className="flex items-center gap-4">
-            {/* Furigana mode toggle */}
+          <div className="flex items-center gap-3">
             <button
               onClick={cycleFurigana}
               className="text-xs px-2 py-1 rounded border border-zinc-700
@@ -139,57 +161,81 @@ export function StoryCanvas() {
             >
               {furiganaMode === "full" ? "振仮名：全" : furiganaMode === "known_only" ? "振仮名：未" : "振仮名：無"}
             </button>
-            {latestSegment && <ContextBar usagePct={latestSegment.contextPct} />}
+            {latestStory && <ContextBar usagePct={latestStory.contextPct} />}
           </div>
         </div>
 
-        {/* Story text — all segments stacked */}
-        <div className="flex flex-col gap-6">
-          {segments.map((seg, si) => (
-            <div key={si} className={`text-xl leading-loose tracking-wide ${si < segments.length - 1 ? "text-zinc-500" : "text-zinc-100"}`}>
-              {seg.tokens.map((token, ti) => (
-                <TokenSpan
-                  key={`${si}-${ti}`}
-                  token={token}
-                  furiganaMode={furiganaMode}
-                  onSelect={setSelectedToken}
-                />
-              ))}
+        {/* Turn list */}
+        <div className="flex flex-col gap-4 flex-1">
+          {turns.map((turn, i) => {
+            if (turn.type === "user") {
+              return (
+                <div key={i} className="flex justify-end">
+                  <div className="max-w-[75%] px-4 py-2.5 rounded-2xl rounded-tr-sm
+                                  bg-sky-700 text-white text-base leading-relaxed">
+                    {turn.text}
+                  </div>
+                </div>
+              );
+            }
+
+            // Story turn
+            const isLatest = i === turns.length - 1;
+            return (
+              <div key={i} className="flex flex-col gap-1">
+                <div className={`text-xl leading-loose tracking-wide transition-colors
+                                 ${isLatest ? "text-zinc-100" : "text-zinc-500"}`}>
+                  {turn.tokens.map((token, ti) => (
+                    <TokenSpan
+                      key={`${i}-${ti}`}
+                      token={token}
+                      furiganaMode={furiganaMode}
+                      onSelect={setSelectedToken}
+                    />
+                  ))}
+                </div>
+                {/* Stats — only on latest */}
+                {isLatest && (
+                  <p className="text-xs text-zinc-600 mt-1">
+                    {turn.newWords} new / {turn.totalWords} content words
+                    {pendingHint && (
+                      <span className={`ml-2 ${pendingHint === "too_hard" ? "text-red-400" : "text-emerald-400"}`}>
+                        · {pendingHint === "too_hard" ? "Easier next" : "Harder next"}
+                      </span>
+                    )}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Loading indicator */}
+          {loading && (
+            <div className="flex gap-1.5 items-center px-2 py-3">
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:0ms]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:150ms]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:300ms]" />
             </div>
-          ))}
+          )}
+
+          {error && <p className="text-red-400 text-sm px-2">{error}</p>}
+
+          {/* Scroll anchor */}
+          <div ref={bottomRef} />
         </div>
 
-        {/* Stats for the latest segment */}
-        {latestSegment && (
-          <p className="text-xs text-zinc-600">
-            {latestSegment.newWords} new / {latestSegment.totalWords} content words this segment
-            {pendingHint && (
-              <span className={`ml-2 ${pendingHint === "too_hard" ? "text-red-400" : "text-emerald-400"}`}>
-                ({pendingHint === "too_hard" ? "Easier next" : "Harder next"})
-              </span>
-            )}
-          </p>
-        )}
-
-        {/* Loading indicator */}
-        {loading && (
-          <p className="text-zinc-500 text-sm animate-pulse">Generating next segment…</p>
-        )}
-
-        {error && <p className="text-red-400 text-sm">{error}</p>}
-
-        {/* Input + difficulty buttons */}
-        {latestSegment && !loading && (
-          <>
+        {/* Input area — pinned to bottom */}
+        {!loading && latestStory && (
+          <div className="mt-4 pt-4 border-t border-zinc-800">
             <StoryInput
-              suggestions={latestSegment.choices}
+              suggestions={latestStory.choices}
               disabled={loading}
               onSubmit={handleSubmit}
             />
             <div className="flex justify-end mt-2">
               <DifficultyButtons disabled={loading} onHint={handleDifficultyHint} />
             </div>
-          </>
+          </div>
         )}
       </div>
 
@@ -232,8 +278,9 @@ export function StoryCanvas() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function toSegment(res: StoryResponse): StorySegment {
+function toStoryTurn(res: StoryResponse): StoryTurn {
   return {
+    type: "story",
     tokens: res.tokens,
     choices: res.choices,
     contextPct: res.context_usage_pct,
