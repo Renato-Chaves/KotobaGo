@@ -13,6 +13,7 @@ from core.story_builder import (
 )
 from core.tokenizer import Token
 from db.models import Story, StorySession, UserVocab, Vocab, get_db
+from routes.vocab import _annotate_with_vocab_status
 
 router = APIRouter(prefix="/story", tags=["story"])
 
@@ -91,6 +92,7 @@ async def start_story(req: StartStoryRequest, db: Session = Depends(get_db)):
         known_surfaces=known_surfaces,
         target_pct=req.new_word_pct,
     )
+    tokens = _annotate_with_vocab_status(tokens, req.user_id, db)
 
     # Persist story + session
     story = Story(
@@ -168,6 +170,7 @@ async def continue_story(
         known_surfaces=known_surfaces,
         target_pct=_DEFAULT_NEW_WORD_PCT,
     )
+    tokens = _annotate_with_vocab_status(tokens, req.user_id, db)
 
     # Update session history
     updated_history = [

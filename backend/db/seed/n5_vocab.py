@@ -1,0 +1,586 @@
+"""
+JLPT N5 vocabulary seed data.
+
+Run inside the backend container:
+  docker compose exec backend python db/seed/n5_vocab.py
+
+Creates:
+  - A List entry for "JLPT N5"
+  - Vocab entries for all N5 words
+  - ListVocab entries linking them
+  - UserVocab entries for user id=1 with status="unseen"
+    so the LLM immediately receives the full N5 word list
+    as the vocabulary budget for story generation.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+from db.models import List, ListVocab, SessionLocal, UserVocab, Vocab, init_db
+
+# ---------------------------------------------------------------------------
+# N5 word list — (word, reading, meaning)
+# ---------------------------------------------------------------------------
+
+N5_WORDS = [
+    # --- Pronouns & question words ---
+    ("私",     "わたし",       "I, me"),
+    ("僕",     "ぼく",         "I, me (casual male)"),
+    ("あなた", "あなた",       "you"),
+    ("彼",     "かれ",         "he, him, boyfriend"),
+    ("彼女",   "かのじょ",     "she, her, girlfriend"),
+    ("私たち", "わたしたち",   "we, us"),
+    ("みんな", "みんな",       "everyone, all"),
+    ("これ",   "これ",         "this (near speaker)"),
+    ("それ",   "それ",         "that (near listener)"),
+    ("あれ",   "あれ",         "that (far from both)"),
+    ("この",   "この",         "this (before noun)"),
+    ("その",   "その",         "that (before noun)"),
+    ("あの",   "あの",         "that over there (before noun)"),
+    ("ここ",   "ここ",         "here"),
+    ("そこ",   "そこ",         "there"),
+    ("あそこ", "あそこ",       "over there"),
+    ("どこ",   "どこ",         "where"),
+    ("だれ",   "だれ",         "who"),
+    ("何",     "なに",         "what"),
+    ("いつ",   "いつ",         "when"),
+    ("どれ",   "どれ",         "which one"),
+    ("どの",   "どの",         "which (before noun)"),
+    ("どう",   "どう",         "how, in what way"),
+    ("どうして","どうして",     "why, how come"),
+    ("なぜ",   "なぜ",         "why"),
+    ("いくら", "いくら",       "how much (price)"),
+    ("いくつ", "いくつ",       "how many, how old"),
+    ("どんな", "どんな",       "what kind of"),
+
+    # --- Numbers ---
+    ("一",   "いち",  "one"),
+    ("二",   "に",    "two"),
+    ("三",   "さん",  "three"),
+    ("四",   "し",    "four"),
+    ("五",   "ご",    "five"),
+    ("六",   "ろく",  "six"),
+    ("七",   "なな",  "seven"),
+    ("八",   "はち",  "eight"),
+    ("九",   "きゅう","nine"),
+    ("十",   "じゅう","ten"),
+    ("百",   "ひゃく","hundred"),
+    ("千",   "せん",  "thousand"),
+    ("万",   "まん",  "ten thousand"),
+    ("半",   "はん",  "half"),
+    ("何番", "なんばん","what number"),
+
+    # --- Time ---
+    ("今",     "いま",       "now"),
+    ("今日",   "きょう",     "today"),
+    ("明日",   "あした",     "tomorrow"),
+    ("昨日",   "きのう",     "yesterday"),
+    ("今週",   "こんしゅう", "this week"),
+    ("来週",   "らいしゅう", "next week"),
+    ("先週",   "せんしゅう", "last week"),
+    ("今月",   "こんげつ",   "this month"),
+    ("来月",   "らいげつ",   "next month"),
+    ("先月",   "せんげつ",   "last month"),
+    ("今年",   "ことし",     "this year"),
+    ("来年",   "らいねん",   "next year"),
+    ("去年",   "きょねん",   "last year"),
+    ("朝",     "あさ",       "morning"),
+    ("昼",     "ひる",       "noon, daytime"),
+    ("夜",     "よる",       "night, evening"),
+    ("午前",   "ごぜん",     "AM, morning"),
+    ("午後",   "ごご",       "PM, afternoon"),
+    ("毎日",   "まいにち",   "every day"),
+    ("毎朝",   "まいあさ",   "every morning"),
+    ("毎晩",   "まいばん",   "every evening"),
+    ("毎週",   "まいしゅう", "every week"),
+    ("毎年",   "まいとし",   "every year"),
+    ("時",     "じ",         "o'clock, hour"),
+    ("分",     "ふん",       "minute"),
+    ("秒",     "びょう",     "second"),
+    ("週",     "しゅう",     "week"),
+    ("月",     "つき",       "moon, month"),
+    ("年",     "とし",       "year, age"),
+    ("日曜日", "にちようび", "Sunday"),
+    ("月曜日", "げつようび", "Monday"),
+    ("火曜日", "かようび",   "Tuesday"),
+    ("水曜日", "すいようび", "Wednesday"),
+    ("木曜日", "もくようび", "Thursday"),
+    ("金曜日", "きんようび", "Friday"),
+    ("土曜日", "どようび",   "Saturday"),
+    ("春",     "はる",       "spring"),
+    ("夏",     "なつ",       "summer"),
+    ("秋",     "あき",       "autumn, fall"),
+    ("冬",     "ふゆ",       "winter"),
+
+    # --- People & family ---
+    ("人",     "ひと",       "person, people"),
+    ("方",     "かた",       "person (polite)"),
+    ("家族",   "かぞく",     "family"),
+    ("父",     "ちち",       "father (own)"),
+    ("母",     "はは",       "mother (own)"),
+    ("兄",     "あに",       "older brother (own)"),
+    ("姉",     "あね",       "older sister (own)"),
+    ("弟",     "おとうと",   "younger brother"),
+    ("妹",     "いもうと",   "younger sister"),
+    ("子供",   "こども",     "child, children"),
+    ("男",     "おとこ",     "man, male"),
+    ("女",     "おんな",     "woman, female"),
+    ("男の人", "おとこのひと","man"),
+    ("女の人", "おんなのひと","woman"),
+    ("男の子", "おとこのこ", "boy"),
+    ("女の子", "おんなのこ", "girl"),
+    ("友達",   "ともだち",   "friend"),
+    ("先生",   "せんせい",   "teacher"),
+    ("学生",   "がくせい",   "student"),
+    ("会社員", "かいしゃいん","company employee"),
+    ("店員",   "てんいん",   "shop staff, clerk"),
+
+    # --- Body ---
+    ("頭",     "あたま",     "head"),
+    ("顔",     "かお",       "face"),
+    ("目",     "め",         "eye"),
+    ("耳",     "みみ",       "ear"),
+    ("鼻",     "はな",       "nose"),
+    ("口",     "くち",       "mouth"),
+    ("歯",     "は",         "tooth, teeth"),
+    ("手",     "て",         "hand"),
+    ("足",     "あし",       "foot, leg"),
+    ("体",     "からだ",     "body"),
+
+    # --- Places ---
+    ("日本",   "にほん",     "Japan"),
+    ("国",     "くに",       "country"),
+    ("東京",   "とうきょう", "Tokyo"),
+    ("家",     "いえ",       "house, home"),
+    ("部屋",   "へや",       "room"),
+    ("学校",   "がっこう",   "school"),
+    ("会社",   "かいしゃ",   "company, office"),
+    ("病院",   "びょういん", "hospital"),
+    ("銀行",   "ぎんこう",   "bank"),
+    ("郵便局", "ゆうびんきょく","post office"),
+    ("図書館", "としょかん", "library"),
+    ("駅",     "えき",       "train station"),
+    ("空港",   "くうこう",   "airport"),
+    ("店",     "みせ",       "shop, store"),
+    ("レストラン","れすとらん","restaurant"),
+    ("喫茶店", "きっさてん", "coffee shop, café"),
+    ("スーパー","すーぱー",  "supermarket"),
+    ("公園",   "こうえん",   "park"),
+    ("道",     "みち",       "road, way, path"),
+    ("橋",     "はし",       "bridge"),
+    ("山",     "やま",       "mountain"),
+    ("川",     "かわ",       "river"),
+    ("海",     "うみ",       "sea, ocean"),
+    ("池",     "いけ",       "pond"),
+    ("空",     "そら",       "sky"),
+    ("外",     "そと",       "outside"),
+    ("中",     "なか",       "inside, middle"),
+    ("上",     "うえ",       "above, top, on"),
+    ("下",     "した",       "below, under, bottom"),
+    ("右",     "みぎ",       "right"),
+    ("左",     "ひだり",     "left"),
+    ("前",     "まえ",       "front, before"),
+    ("後ろ",   "うしろ",     "behind, back"),
+    ("隣",     "となり",     "next to, neighbor"),
+    ("近く",   "ちかく",     "nearby, close"),
+    ("遠く",   "とおく",     "far away, distance"),
+
+    # --- Transportation ---
+    ("車",     "くるま",     "car"),
+    ("電車",   "でんしゃ",   "train"),
+    ("バス",   "ばす",       "bus"),
+    ("タクシー","たくしー",  "taxi"),
+    ("自転車", "じてんしゃ", "bicycle"),
+    ("飛行機", "ひこうき",   "airplane"),
+    ("船",     "ふね",       "ship, boat"),
+    ("地下鉄", "ちかてつ",   "subway, metro"),
+
+    # --- Food & drink ---
+    ("食べ物", "たべもの",   "food"),
+    ("飲み物", "のみもの",   "drink, beverage"),
+    ("ご飯",   "ごはん",     "cooked rice, meal"),
+    ("パン",   "ぱん",       "bread"),
+    ("肉",     "にく",       "meat"),
+    ("魚",     "さかな",     "fish"),
+    ("野菜",   "やさい",     "vegetable"),
+    ("果物",   "くだもの",   "fruit"),
+    ("卵",     "たまご",     "egg"),
+    ("水",     "みず",       "water"),
+    ("お茶",   "おちゃ",     "tea (Japanese)"),
+    ("コーヒー","こーひー",  "coffee"),
+    ("ビール", "びーる",     "beer"),
+    ("牛乳",   "ぎゅうにゅう","milk"),
+    ("ジュース","じゅーす",  "juice"),
+    ("朝ご飯", "あさごはん", "breakfast"),
+    ("昼ご飯", "ひるごはん", "lunch"),
+    ("夜ご飯", "よるごはん", "dinner, supper"),
+    ("菓子",   "かし",       "sweets, snack"),
+    ("料理",   "りょうり",   "cooking, dish"),
+
+    # --- Common objects ---
+    ("本",     "ほん",       "book"),
+    ("雑誌",   "ざっし",     "magazine"),
+    ("新聞",   "しんぶん",   "newspaper"),
+    ("手紙",   "てがみ",     "letter"),
+    ("電話",   "でんわ",     "telephone"),
+    ("携帯",   "けいたい",   "mobile phone"),
+    ("パソコン","ぱそこん",  "personal computer"),
+    ("テレビ", "てれび",     "television"),
+    ("ラジオ", "らじお",     "radio"),
+    ("カメラ", "かめら",     "camera"),
+    ("時計",   "とけい",     "clock, watch"),
+    ("鍵",     "かぎ",       "key, lock"),
+    ("傘",     "かさ",       "umbrella"),
+    ("荷物",   "にもつ",     "luggage, baggage"),
+    ("袋",     "ふくろ",     "bag, sack"),
+    ("財布",   "さいふ",     "wallet, purse"),
+    ("眼鏡",   "めがね",     "glasses, spectacles"),
+    ("服",     "ふく",       "clothes"),
+    ("靴",     "くつ",       "shoes"),
+    ("帽子",   "ぼうし",     "hat, cap"),
+    ("机",     "つくえ",     "desk"),
+    ("椅子",   "いす",       "chair"),
+    ("窓",     "まど",       "window"),
+    ("ドア",   "どあ",       "door"),
+    ("電気",   "でんき",     "electricity, light"),
+    ("お金",   "おかね",     "money"),
+    ("切符",   "きっぷ",     "ticket"),
+    ("写真",   "しゃしん",   "photograph, photo"),
+    ("地図",   "ちず",       "map"),
+    ("花",     "はな",       "flower"),
+    ("木",     "き",         "tree, wood"),
+
+    # --- Nature & weather ---
+    ("天気",   "てんき",     "weather"),
+    ("雨",     "あめ",       "rain"),
+    ("雪",     "ゆき",       "snow"),
+    ("風",     "かぜ",       "wind"),
+    ("晴れ",   "はれ",       "clear weather, sunny"),
+    ("曇り",   "くもり",     "cloudy"),
+
+    # --- Verbs ---
+    ("食べる", "たべる",     "to eat"),
+    ("飲む",   "のむ",       "to drink"),
+    ("行く",   "いく",       "to go"),
+    ("来る",   "くる",       "to come"),
+    ("帰る",   "かえる",     "to return, go home"),
+    ("見る",   "みる",       "to see, watch, look"),
+    ("聞く",   "きく",       "to listen, hear, ask"),
+    ("話す",   "はなす",     "to speak, talk"),
+    ("読む",   "よむ",       "to read"),
+    ("書く",   "かく",       "to write"),
+    ("買う",   "かう",       "to buy"),
+    ("売る",   "うる",       "to sell"),
+    ("使う",   "つかう",     "to use"),
+    ("作る",   "つくる",     "to make, create"),
+    ("開ける", "あける",     "to open"),
+    ("閉める", "しめる",     "to close"),
+    ("起きる", "おきる",     "to wake up, get up"),
+    ("寝る",   "ねる",       "to sleep, go to bed"),
+    ("立つ",   "たつ",       "to stand up"),
+    ("座る",   "すわる",     "to sit down"),
+    ("歩く",   "あるく",     "to walk"),
+    ("走る",   "はしる",     "to run"),
+    ("泳ぐ",   "およぐ",     "to swim"),
+    ("乗る",   "のる",       "to ride, board"),
+    ("降りる", "おりる",     "to get off, descend"),
+    ("入る",   "はいる",     "to enter"),
+    ("出る",   "でる",       "to leave, go out"),
+    ("会う",   "あう",       "to meet"),
+    ("待つ",   "まつ",       "to wait"),
+    ("知る",   "しる",       "to know, find out"),
+    ("分かる", "わかる",     "to understand"),
+    ("できる", "できる",     "to be able to, can"),
+    ("する",   "する",       "to do"),
+    ("ある",   "ある",       "to exist (inanimate), to have"),
+    ("いる",   "いる",       "to exist (animate), to be"),
+    ("持つ",   "もつ",       "to hold, have, carry"),
+    ("思う",   "おもう",     "to think, feel"),
+    ("言う",   "いう",       "to say"),
+    ("もらう", "もらう",     "to receive"),
+    ("あげる", "あげる",     "to give (to others)"),
+    ("くれる", "くれる",     "to give (to me)"),
+    ("教える", "おしえる",   "to teach, tell"),
+    ("習う",   "ならう",     "to learn (from someone)"),
+    ("勉強する","べんきょうする","to study"),
+    ("働く",   "はたらく",   "to work"),
+    ("休む",   "やすむ",     "to rest, take a break"),
+    ("洗う",   "あらう",     "to wash"),
+    ("切る",   "きる",       "to cut"),
+    ("始める", "はじめる",   "to begin, start"),
+    ("終わる", "おわる",     "to end, finish"),
+    ("住む",   "すむ",       "to live, reside"),
+    ("生まれる","うまれる",  "to be born"),
+    ("笑う",   "わらう",     "to laugh, smile"),
+    ("泣く",   "なく",       "to cry"),
+    ("飛ぶ",   "とぶ",       "to fly, jump"),
+    ("引く",   "ひく",       "to pull"),
+    ("押す",   "おす",       "to push"),
+    ("貸す",   "かす",       "to lend"),
+    ("借りる", "かりる",     "to borrow"),
+    ("払う",   "はらう",     "to pay"),
+    ("急ぐ",   "いそぐ",     "to hurry"),
+    ("困る",   "こまる",     "to be troubled, in trouble"),
+    ("頼む",   "たのむ",     "to request, ask a favor"),
+    ("手伝う", "てつだう",   "to help, assist"),
+    ("遊ぶ",   "あそぶ",     "to play, have fun"),
+    ("旅行する","りょこうする","to travel"),
+    ("電話する","でんわする", "to telephone"),
+    ("結婚する","けっこんする","to marry, get married"),
+    ("練習する","れんしゅうする","to practice"),
+    ("撮る",   "とる",       "to take (a photo)"),
+    ("脱ぐ",   "ぬぐ",       "to take off (clothes)"),
+    ("着る",   "きる",       "to wear (upper body)"),
+    ("履く",   "はく",       "to wear (lower body/feet)"),
+    ("かぶる", "かぶる",     "to wear (on head)"),
+    ("あける", "あける",     "to open"),
+    ("消す",   "けす",       "to turn off, erase"),
+    ("つける", "つける",     "to turn on, attach"),
+    ("渡す",   "わたす",     "to hand over, pass"),
+    ("渡る",   "わたる",     "to cross (a road/bridge)"),
+    ("曲がる", "まがる",     "to turn, bend"),
+    ("止まる", "とまる",     "to stop"),
+    ("止める", "とめる",     "to stop (something)"),
+    ("起こす", "おこす",     "to wake (someone) up"),
+    ("答える", "こたえる",   "to answer"),
+    ("聞こえる","きこえる",  "to be audible, can hear"),
+    ("見える", "みえる",     "to be visible, can see"),
+    ("疲れる", "つかれる",   "to get tired"),
+    ("忘れる", "わすれる",   "to forget"),
+    ("覚える", "おぼえる",   "to memorize, remember"),
+
+    # --- I-adjectives ---
+    ("大きい", "おおきい",   "big, large"),
+    ("小さい", "ちいさい",   "small, little"),
+    ("高い",   "たかい",     "high, tall, expensive"),
+    ("低い",   "ひくい",     "low, short (height)"),
+    ("安い",   "やすい",     "cheap, inexpensive"),
+    ("長い",   "ながい",     "long"),
+    ("短い",   "みじかい",   "short"),
+    ("広い",   "ひろい",     "wide, spacious"),
+    ("狭い",   "せまい",     "narrow, small (space)"),
+    ("新しい", "あたらしい", "new"),
+    ("古い",   "ふるい",     "old"),
+    ("若い",   "わかい",     "young"),
+    ("多い",   "おおい",     "many, much"),
+    ("少ない", "すくない",   "few, little"),
+    ("良い",   "いい",       "good"),
+    ("悪い",   "わるい",     "bad"),
+    ("暑い",   "あつい",     "hot (weather)"),
+    ("寒い",   "さむい",     "cold (weather)"),
+    ("暖かい", "あたたかい", "warm"),
+    ("涼しい", "すずしい",   "cool (temperature)"),
+    ("熱い",   "あつい",     "hot (to touch)"),
+    ("冷たい", "つめたい",   "cold (to touch)"),
+    ("難しい", "むずかしい", "difficult"),
+    ("易しい", "やさしい",   "easy, simple"),
+    ("忙しい", "いそがしい", "busy"),
+    ("楽しい", "たのしい",   "fun, enjoyable"),
+    ("嬉しい", "うれしい",   "happy, glad"),
+    ("悲しい", "かなしい",   "sad"),
+    ("怖い",   "こわい",     "scary, frightening"),
+    ("痛い",   "いたい",     "painful, sore"),
+    ("眠い",   "ねむい",     "sleepy"),
+    ("重い",   "おもい",     "heavy"),
+    ("軽い",   "かるい",     "light (weight)"),
+    ("速い",   "はやい",     "fast, quick"),
+    ("遅い",   "おそい",     "slow, late"),
+    ("近い",   "ちかい",     "near, close"),
+    ("遠い",   "とおい",     "far, distant"),
+    ("白い",   "しろい",     "white"),
+    ("黒い",   "くろい",     "black"),
+    ("赤い",   "あかい",     "red"),
+    ("青い",   "あおい",     "blue, green"),
+    ("黄色い", "きいろい",   "yellow"),
+    ("丸い",   "まるい",     "round, circular"),
+    ("辛い",   "からい",     "spicy, hot (taste)"),
+    ("甘い",   "あまい",     "sweet"),
+    ("苦い",   "にがい",     "bitter"),
+    ("明るい", "あかるい",   "bright, cheerful"),
+    ("暗い",   "くらい",     "dark"),
+    ("正しい", "ただしい",   "correct, right"),
+    ("優しい", "やさしい",   "kind, gentle"),
+    ("強い",   "つよい",     "strong"),
+    ("弱い",   "よわい",     "weak"),
+    ("うるさい","うるさい",  "noisy, annoying"),
+    ("おいしい","おいしい",  "delicious, tasty"),
+    ("まずい", "まずい",     "bad-tasting, unpleasant"),
+
+    # --- Na-adjectives ---
+    ("静か",   "しずか",     "quiet, calm"),
+    ("賑やか", "にぎやか",   "lively, bustling"),
+    ("綺麗",   "きれい",     "pretty, clean"),
+    ("元気",   "げんき",     "healthy, energetic"),
+    ("親切",   "しんせつ",   "kind, helpful"),
+    ("丁寧",   "ていねい",   "polite, careful"),
+    ("便利",   "べんり",     "convenient, handy"),
+    ("大切",   "たいせつ",   "important, precious"),
+    ("大変",   "たいへん",   "hard, difficult, serious"),
+    ("嫌い",   "きらい",     "dislike, hate"),
+    ("好き",   "すき",       "like, fond of"),
+    ("上手",   "じょうず",   "skilled, good at"),
+    ("下手",   "へた",       "unskilled, bad at"),
+    ("有名",   "ゆうめい",   "famous"),
+    ("暇",     "ひま",       "free time, not busy"),
+    ("大丈夫", "だいじょうぶ","all right, OK"),
+    ("同じ",   "おなじ",     "same"),
+    ("色々",   "いろいろ",   "various, all kinds"),
+    ("特別",   "とくべつ",   "special"),
+    ("必要",   "ひつよう",   "necessary, needed"),
+    ("簡単",   "かんたん",   "simple, easy"),
+    ("複雑",   "ふくざつ",   "complicated"),
+    ("自由",   "じゆう",     "free, freedom"),
+    ("安全",   "あんぜん",   "safe"),
+    ("危険",   "きけん",     "dangerous"),
+    ("真剣",   "しんけん",   "serious, earnest"),
+
+    # --- Adverbs ---
+    ("とても", "とても",     "very, extremely"),
+    ("少し",   "すこし",     "a little, a bit"),
+    ("あまり", "あまり",     "not very (+ negative)"),
+    ("もう",   "もう",       "already, anymore"),
+    ("まだ",   "まだ",       "still, not yet"),
+    ("また",   "また",       "again, also"),
+    ("よく",   "よく",       "often, well"),
+    ("時々",   "ときどき",   "sometimes"),
+    ("たいてい","たいてい",  "usually, generally"),
+    ("いつも", "いつも",     "always"),
+    ("決して", "けっして",   "never (+ negative)"),
+    ("もっと", "もっと",     "more"),
+    ("たくさん","たくさん",  "a lot, many"),
+    ("ゆっくり","ゆっくり",  "slowly"),
+    ("早く",   "はやく",     "quickly, early"),
+    ("一緒に", "いっしょに", "together"),
+    ("一人で", "ひとりで",   "alone, by oneself"),
+    ("全部",   "ぜんぶ",     "all, everything"),
+    ("全然",   "ぜんぜん",   "not at all (+ negative)"),
+    ("本当に", "ほんとうに", "really, truly"),
+    ("どうぞ", "どうぞ",     "please, go ahead"),
+    ("どうも", "どうも",     "thank you, somehow"),
+    ("もちろん","もちろん",  "of course"),
+    ("たぶん", "たぶん",     "probably, perhaps"),
+    ("ぜひ",   "ぜひ",       "by all means, definitely"),
+    ("特に",   "とくに",     "especially, particularly"),
+    ("だいたい","だいたい",  "approximately, generally"),
+    ("はっきり","はっきり",  "clearly, distinctly"),
+    ("ちょっと","ちょっと",  "a little, excuse me"),
+    ("だんだん","だんだん",  "gradually"),
+    ("もうすぐ","もうすぐ",  "soon, shortly"),
+    ("初めて", "はじめて",   "for the first time"),
+    ("久しぶり","ひさしぶり","long time no see"),
+
+    # --- Common nouns (miscellaneous) ---
+    ("名前",   "なまえ",     "name"),
+    ("言葉",   "ことば",     "word, language"),
+    ("日本語", "にほんご",   "Japanese language"),
+    ("英語",   "えいご",     "English language"),
+    ("授業",   "じゅぎょう", "class, lesson"),
+    ("宿題",   "しゅくだい", "homework"),
+    ("試験",   "しけん",     "exam, test"),
+    ("仕事",   "しごと",     "work, job"),
+    ("趣味",   "しゅみ",     "hobby, interest"),
+    ("映画",   "えいが",     "movie, film"),
+    ("音楽",   "おんがく",   "music"),
+    ("スポーツ","すぽーつ",  "sport"),
+    ("旅行",   "りょこう",   "travel, trip"),
+    ("料金",   "りょうきん", "charge, fee, fare"),
+    ("値段",   "ねだん",     "price"),
+    ("意味",   "いみ",       "meaning"),
+    ("問題",   "もんだい",   "problem, question"),
+    ("答え",   "こたえ",     "answer"),
+    ("質問",   "しつもん",   "question"),
+    ("電話番号","でんわばんごう","phone number"),
+    ("住所",   "じゅうしょ", "address"),
+    ("病気",   "びょうき",   "illness, sickness"),
+    ("薬",     "くすり",     "medicine, drug"),
+    ("色",     "いろ",       "color"),
+    ("形",     "かたち",     "shape, form"),
+    ("声",     "こえ",       "voice"),
+    ("音",     "おと",       "sound, noise"),
+    ("話",     "はなし",     "story, talk, conversation"),
+    ("気",     "き",         "spirit, feeling, mood"),
+    ("心",     "こころ",     "heart, mind, spirit"),
+    ("夢",     "ゆめ",       "dream"),
+    ("生活",   "せいかつ",   "life, living, lifestyle"),
+    ("世界",   "せかい",     "world"),
+    ("社会",   "しゃかい",   "society"),
+    ("自分",   "じぶん",     "oneself, myself"),
+    ("場所",   "ばしょ",     "place, location"),
+    ("方法",   "ほうほう",   "method, way"),
+    ("理由",   "りゆう",     "reason, cause"),
+    ("机",     "つくえ",     "desk"),
+    ("番号",   "ばんごう",   "number"),
+    ("側",     "そば",       "beside, near"),
+    ("間",     "あいだ",     "between, among, during"),
+    ("頃",     "ごろ",       "around (time), about"),
+    ("ほう",   "ほう",       "direction, side, way"),
+]
+
+
+def main():
+    init_db()
+    db = SessionLocal()
+
+    # Check if fully seeded (allow partial re-runs to fill gaps)
+    existing_count = db.query(Vocab).filter(Vocab.jlpt_level == "N5").count()
+    if existing_count >= len(N5_WORDS):
+        print(f"N5 vocab already fully seeded ({existing_count} words). Skipping.")
+        db.close()
+        return
+
+    # Create or get the JLPT N5 list
+    n5_list = db.query(List).filter(List.name == "JLPT N5").first()
+    if not n5_list:
+        n5_list = List(name="JLPT N5", source="jlpt")
+        db.add(n5_list)
+        db.flush()
+
+    # Get user 1 (must exist — run seed_user.py first)
+    from db.models import User
+    user = db.query(User).filter(User.id == 1).first()
+    if not user:
+        print("User 1 not found. Run seed_user.py first.")
+        db.close()
+        return
+
+    inserted = 0
+    skipped = 0
+
+    for word, reading, meaning in N5_WORDS:
+        # Skip if already in vocab table (avoid duplicate key on re-run)
+        existing = db.query(Vocab).filter(Vocab.word == word).first()
+        if existing:
+            skipped += 1
+            continue
+
+        vocab = Vocab(
+            word=word,
+            reading=reading,
+            meaning=meaning,
+            jlpt_level="N5",
+            list_id=n5_list.id,
+        )
+        db.add(vocab)
+        db.flush()
+
+        # Link to N5 list
+        db.add(ListVocab(list_id=n5_list.id, vocab_id=vocab.id))
+
+        # Pre-populate UserVocab so the full N5 list reaches the LLM prompt
+        db.add(UserVocab(
+            user_id=user.id,
+            vocab_id=vocab.id,
+            status="unseen",
+        ))
+
+        inserted += 1
+
+    db.commit()
+    db.close()
+    print(f"N5 seed complete: {inserted} words inserted, {skipped} skipped.")
+
+
+if __name__ == "__main__":
+    main()
