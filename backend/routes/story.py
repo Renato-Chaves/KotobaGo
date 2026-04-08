@@ -305,12 +305,17 @@ def _tokens_to_out(tokens: list[Token]) -> list[TokenOut]:
 
 
 def _build_opening_message(theme: str | None, grammar_focus: str | None) -> str:
-    parts = ["Please start a new interactive story."]
+    parts = [
+        "Please start a new interactive story where I am the protagonist.",
+        "Address me directly (あなた or implied second person).",
+        "Set the scene briefly, then immediately put me in a situation where I need to act or speak.",
+        "End the opening segment the moment I need to respond — someone is asking me something, "
+        "or I am facing a clear choice. Do not resolve the situation for me.",
+    ]
     if theme:
         parts.append(f"Theme: {theme}.")
     if grammar_focus:
-        parts.append(f"Please naturally incorporate grammar patterns related to: {grammar_focus}.")
-    parts.append("Begin with scene-setting and end with 2–3 choices.")
+        parts.append(f"Naturally incorporate grammar patterns related to: {grammar_focus}.")
     return " ".join(parts)
 
 

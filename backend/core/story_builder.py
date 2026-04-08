@@ -58,17 +58,22 @@ VOCABULARY RULES:
 - Do NOT include furigana — it is added separately by the tokenizer
 
 STORY RULES:
-- Write 3–6 sentences of story text per segment
-- End each segment with exactly 2–3 choices for the learner
-- Make choices consequential — different grammar forms or politeness levels when appropriate
-- Never break the narrative to explain grammar or translate — stay in the story world
-- Do not correct the learner's input in-line
-- Use Japanese names for all characters (e.g. さくら、たろう) — never English names or placeholders
+- The learner is ALWAYS the protagonist. Write in second person: use あなた or address the learner directly.
+- Every segment must end with the learner facing a concrete situation that requires them to act or speak.
+  The learner should know exactly what they need to respond to — a question asked of them, a decision to make,
+  someone waiting for their reply. Never end on passive observation.
+- Write 3–5 sentences per segment. Keep it tight — end at the moment of decision, not after it.
+- The suggested choices must be things the learner could actually say or do in that moment
+  (e.g. their reply to a question, what they order, how they greet someone).
+- Make choices consequential — different politeness levels or grammar forms when appropriate.
+- Never break the narrative to explain grammar or translate — stay in the story world.
+- Do not correct the learner's input in-line.
+- Use Japanese names for supporting characters (e.g. さくら、たろう) — never English names or placeholders.
 
 OUTPUT FORMAT — respond ONLY with valid JSON, no markdown, no extra text:
 {{
   "story_text": "story segment in Japanese",
-  "choices": ["choice 1 in Japanese", "choice 2 in Japanese", "choice 3 in Japanese (optional)"]
+  "choices": ["what the learner could say/do — in Japanese", "alternative response — in Japanese", "optional third option"]
 }}"""
 
 
