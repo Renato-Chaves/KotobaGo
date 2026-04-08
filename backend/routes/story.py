@@ -57,6 +57,15 @@ class StoryResponse(BaseModel):
     total_content_words: int
 
 
+class TranslateRequest(BaseModel):
+    text: str
+    user_id: int = 1
+
+
+class TranslateResponse(BaseModel):
+    translation: str
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -199,6 +208,26 @@ async def get_session(session_id: int, db: Session = Depends(get_db)):
         "context_usage_pct": round(session.context_tokens_used / _CONTEXT_LIMIT_TOKENS * 100, 1),
         "history": session.content_json,
     }
+
+
+@router.post("/translate", response_model=TranslateResponse)
+async def translate_segment(req: TranslateRequest, db: Session = Depends(get_db)):
+    """
+    Translate a Japanese story segment into the user's native language.
+    Called on demand — the frontend caches the result so it's fetched once.
+    """
+    from db.models import User
+    user = db.query(User).filter(User.id == req.user_id).first()
+    native = user.native_language if user else "en"
+    lang_name = {"pt": "Portuguese", "en": "English"}.get(native, native)
+
+    system = (
+        f"You are a Japanese translator. Translate the following Japanese text naturally into {lang_name}. "
+        "Output only the translation — no explanations, no Japanese, no extra text."
+    )
+    messages = [{"role": "user", "content": req.text}]
+    translation = await llm_router.route("story", system, messages)
+    return TranslateResponse(translation=translation.strip())
 
 
 # ---------------------------------------------------------------------------

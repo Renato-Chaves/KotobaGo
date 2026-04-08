@@ -8,6 +8,8 @@ import { ContextBar } from "./ContextBar";
 import { DifficultyButtons } from "./DifficultyButtons";
 import { StoryInput } from "./StoryInput";
 import { TokenSpan } from "./TokenSpan";
+import { TranslationToggle } from "./TranslationToggle";
+import { WordSidebar } from "./WordSidebar";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -194,6 +196,10 @@ export function StoryCanvas() {
                     />
                   ))}
                 </div>
+                {/* Translation toggle — available on every segment */}
+                <TranslationToggle
+                  text={turn.tokens.map((t) => t.surface).join("")}
+                />
                 {/* Stats — only on latest */}
                 {isLatest && (
                   <p className="text-xs text-zinc-600 mt-1">
@@ -239,36 +245,26 @@ export function StoryCanvas() {
         )}
       </div>
 
-      {/* --- Sidebar — word lookup --- */}
+      {/* --- Sidebar — word lookup + SRS --- */}
       {selectedToken && (
-        <div className="w-72 border-l border-zinc-800 bg-zinc-900 p-6 flex flex-col gap-4">
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-2xl font-medium">{selectedToken.surface}</p>
-              <p className="text-zinc-400 text-sm">{selectedToken.reading}</p>
-            </div>
-            <button
-              onClick={() => setSelectedToken(null)}
-              className="text-zinc-600 hover:text-zinc-300 text-xl leading-none"
-            >
-              ×
-            </button>
-          </div>
-          <p className="text-xs text-zinc-500 uppercase tracking-widest">{selectedToken.pos}</p>
-          <p className="text-xs text-zinc-500">
-            Status:{" "}
-            <span className={
-              selectedToken.status === "known" ? "text-emerald-400" :
-              selectedToken.status === "new"   ? "text-sky-400" :
-                                                  "text-zinc-400"
-            }>
-              {selectedToken.status}
-            </span>
-          </p>
-          <p className="text-xs text-zinc-600 mt-auto">
-            Full dictionary lookup coming in Phase 5
-          </p>
-        </div>
+        <WordSidebar
+          token={selectedToken}
+          onClose={() => setSelectedToken(null)}
+          onRated={(vocabId, newStatus) => {
+            // Update the token's status in all turns so underlines reflect the rating
+            setTurns((prev) => prev.map((turn) => {
+              if (turn.type !== "story") return turn;
+              return {
+                ...turn,
+                tokens: turn.tokens.map((t) =>
+                  t.vocab_id === vocabId
+                    ? { ...t, status: newStatus === "mastered" || newStatus === "practiced" ? "known" : "new" }
+                    : t
+                ),
+              };
+            }));
+          }}
+        />
       )}
     </div>
   );

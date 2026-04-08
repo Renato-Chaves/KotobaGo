@@ -23,3 +23,16 @@ export interface StoryResponse {
 
 export type FuriganaMode = "full" | "known_only" | "none";
 export type DifficultyHint = "too_hard" | "too_easy";
+export type ConfidenceRating = "again" | "hard" | "good" | "easy";
+
+export interface WordLookup {
+  vocab_id: number;
+  word: string;
+  reading: string;
+  meaning: string;
+  jlpt_level: string | null;
+  explanation: string;
+  jisho_url: string;
+  user_status: string;
+  next_review: string | null;
+}
