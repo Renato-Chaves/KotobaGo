@@ -1,0 +1,17 @@
+# Environment
+.env
+
+# Database
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node
+node_modules/
+.next/
+
+# OS
+.DS_Store
