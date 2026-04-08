@@ -1,12 +1,13 @@
-FROM python:3.15-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install system dependencies for MeCab
+# Install system dependencies for MeCab + gcc (needed to compile fugashi's Cython extension)
 RUN apt-get update && apt-get install -y \
     mecab \
     mecab-ipadic-utf8 \
     libmecab-dev \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

@@ -68,8 +68,8 @@ docker compose up --build
 ```
 
 - Frontend: http://localhost:3000
-- Backend API: http://localhost:8000
-- Backend docs: http://localhost:8000/docs
+- Backend API: http://localhost:8001
+- Backend docs: http://localhost:8001/docs
 - Ollama: http://localhost:11434
 
 ---

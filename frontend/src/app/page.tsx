@@ -1,3 +1,23 @@
+const HealthCheck = async () => {
+  // Server Components run inside Docker — use the internal Docker network URL.
+  // NEXT_PUBLIC_API_URL is for Client Components (browser → host machine).
+  const apiUrl = process.env.API_URL_INTERNAL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
+
+  let status: string | null = null;
+  try {
+    const res = await fetch(`${apiUrl}/health`, { cache: "no-store" });
+    const data = await res.json();
+    status = data.status;
+  } catch {
+    // backend unreachable
+  }
+
+  if (status) {
+    return <p className="text-sm text-emerald-400">Backend: {status}</p>;
+  }
+  return <p className="text-sm text-red-400">Backend: unreachable</p>;
+}
+
 export default function Home() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-6">
@@ -10,27 +30,4 @@ export default function Home() {
       <HealthCheck />
     </div>
   );
-}
-
-async function HealthCheck() {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
-  try {
-    const res = await fetch(`${apiUrl}/health`, {
-      cache: "no-store",
-    });
-    const data = await res.json();
-
-    return (
-      <p className="text-sm text-emerald-400">
-        Backend: {data.status}
-      </p>
-    );
-  } catch {
-    return (
-      <p className="text-sm text-red-400">
-        Backend: unreachable
-      </p>
-    );
-  }
 }

@@ -4,7 +4,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:8001
+      - API_URL_INTERNAL=http://backend:8000
     depends_on:
       - backend
     volumes:
@@ -15,7 +16,7 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - DATABASE_URL=sqlite:////app/data/kotobago.db
