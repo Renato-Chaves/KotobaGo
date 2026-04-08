@@ -4,9 +4,9 @@ import { useCallback, useState } from "react";
 
 import { api } from "@/lib/api";
 import type { DifficultyHint, FuriganaMode, StoryResponse, Token } from "@/lib/types";
-import { ChoiceButtons } from "./ChoiceButtons";
 import { ContextBar } from "./ContextBar";
 import { DifficultyButtons } from "./DifficultyButtons";
+import { StoryInput } from "./StoryInput";
 import { TokenSpan } from "./TokenSpan";
 
 // ---------------------------------------------------------------------------
@@ -56,9 +56,9 @@ export function StoryCanvas() {
     }
   }, []);
 
-  // --- Continue after a choice ---
+  // --- Continue with user input (free-form or suggestion) ---
 
-  const handleChoice = useCallback(async (choice: string) => {
+  const handleSubmit = useCallback(async (input: string) => {
     if (!sessionId) return;
     setLoading(true);
     setError(null);
@@ -66,7 +66,7 @@ export function StoryCanvas() {
 
     try {
       const res: StoryResponse = await api.continueStory(sessionId, {
-        user_input: choice,
+        user_input: input,
         difficulty_hint: pendingHint ?? undefined,
       });
       setPendingHint(null);
@@ -178,13 +178,13 @@ export function StoryCanvas() {
 
         {error && <p className="text-red-400 text-sm">{error}</p>}
 
-        {/* Choices + difficulty buttons */}
+        {/* Input + difficulty buttons */}
         {latestSegment && !loading && (
           <>
-            <ChoiceButtons
-              choices={latestSegment.choices}
+            <StoryInput
+              suggestions={latestSegment.choices}
               disabled={loading}
-              onChoice={handleChoice}
+              onSubmit={handleSubmit}
             />
             <div className="flex justify-end mt-2">
               <DifficultyButtons disabled={loading} onHint={handleDifficultyHint} />
