@@ -49,6 +49,48 @@ The frontend and backend run in separate Docker containers and communicate over 
 | **anthropic** | Official Anthropic SDK | Typed client for Claude API, used as LLM fallback when Ollama is unavailable or a task benefits from a larger model |
 | **openai** | Official OpenAI SDK | Optional LLM fallback. Same LLM abstraction layer routes to this when configured |
 
+## LLM Abstraction Layer
+
+All AI calls go through two classes in `backend/core/llm.py`:
+
+- **`LLMClient`** — knows *how* to talk to one provider (Ollama, Anthropic, OpenAI). Single `chat(system, messages)` method regardless of provider.
+- **`LLMRouter`** — knows *which* provider to use per task. Routes story generation, error analysis, and context compression to Ollama (local). Coach notes can optionally route to a cloud API for better prose quality via `COACH_NOTE_SOURCE` env var.
+
+Routes and business logic only ever call `router.route(task, system, messages)` — they never know which model is running.
+
+## Tokenizer Pipeline
+
+Every piece of Japanese text passes through `backend/core/tokenizer.py` before reaching the frontend:
+
+```
+Raw AI text
+    ↓
+fugashi (MeCab + unidic-lite) tokenizes
+    → ["私", "は", "学生", "です"]
+    ↓
+Each token gets: surface, reading (hiragana), part-of-speech, is_content flag
+    ↓
+Content tokens (nouns, verbs, adjectives…) checked against user_vocab in DB
+    ↓
+Annotated JSON returned:
+{
+  "tokens": [
+    { "surface": "私",  "reading": "わたくし", "pos": "代名詞", "is_content": true,  "status": "known",  "vocab_id": 1  },
+    { "surface": "は",  "reading": "は",       "pos": "助詞",   "is_content": false, "status": "unseen", "vocab_id": null },
+    { "surface": "学生","reading": "がくせい",  "pos": "名詞",   "is_content": true,  "status": "new",    "vocab_id": 42 }
+  ]
+}
+    ↓
+Frontend renders each token as a selectable <span>
+with underline style based on status, furigana based on user setting
+```
+
+**Vocab status mapping:**
+
+- `unseen` — not in user's vocab list at all → solid underline (brand new word)
+- `new` — introduced but not yet practiced → faint underline
+- `known` — practiced or mastered → no underline
+
 ### Frontend (`/frontend`)
 
 | Library | Purpose | Why this over alternatives |
