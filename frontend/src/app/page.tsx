@@ -28,13 +28,29 @@ export default function Home() {
         AI-powered Japanese learning through comprehensible input
       </p>
       <HealthCheck />
-      <a
-        href="/story"
-        className="mt-2 px-6 py-3 rounded-xl bg-sky-600 hover:bg-sky-500
-                   text-white font-medium transition-colors"
-      >
-        Start Story →
-      </a>
+      <div className="flex gap-3 mt-2 flex-wrap justify-center">
+        <a
+          href="/story"
+          className="px-6 py-3 rounded-xl bg-sky-600 hover:bg-sky-500
+                     text-white font-medium transition-colors"
+        >
+          Start Story →
+        </a>
+        <a
+          href="/vocab"
+          className="px-6 py-3 rounded-xl border border-zinc-700 hover:border-zinc-500
+                     text-zinc-300 hover:text-zinc-100 font-medium transition-colors"
+        >
+          Vocabulary →
+        </a>
+        <a
+          href="/profile"
+          className="px-6 py-3 rounded-xl border border-zinc-700 hover:border-zinc-500
+                     text-zinc-300 hover:text-zinc-100 font-medium transition-colors"
+        >
+          Profile →
+        </a>
+      </div>
     </div>
   );
 }

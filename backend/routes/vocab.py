@@ -59,6 +59,24 @@ class RateResponse(BaseModel):
     interval_days: int
 
 
+class VocabGridItem(BaseModel):
+    vocab_id: int
+    word: str
+    reading: str
+    meaning: str
+    jlpt_level: str | None
+    status: str                   # "unseen" | "introduced" | "practiced" | "mastered"
+    next_review: datetime | None
+    interval_days: int
+    is_due: bool                  # True when next_review <= now and status != unseen
+
+
+class VocabGridResponse(BaseModel):
+    items: list[VocabGridItem]
+    total: int
+    stats: dict                   # {unseen, introduced, practiced, mastered, due}
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -133,6 +151,74 @@ async def rate_word(req: RateRequest, db: Session = Depends(get_db)):
         new_status=user_vocab.status,
         next_review=next_review,
         interval_days=new_srs.interval,
+    )
+
+
+@router.get("/grid", response_model=VocabGridResponse)
+async def get_vocab_grid(
+    user_id: int = 1,
+    status: str = "all",   # "all" | "unseen" | "introduced" | "practiced" | "mastered" | "due"
+    jlpt: str = "all",     # "all" | "N5" | "N4" | "N3" | "N2" | "N1"
+    db: Session = Depends(get_db),
+):
+    """
+    Return the user's full vocabulary grid with optional filters.
+    Words are sorted: due first, then by status progression, then alphabetically.
+    """
+    now = datetime.utcnow()
+
+    query = (
+        db.query(UserVocab, Vocab)
+        .join(Vocab, UserVocab.vocab_id == Vocab.id)
+        .filter(UserVocab.user_id == user_id)
+    )
+
+    if jlpt != "all":
+        query = query.filter(Vocab.jlpt_level == jlpt)
+
+    rows = query.all()
+
+    # Build stats over the full (unfiltered-by-status) result set
+    status_counts = {"unseen": 0, "introduced": 0, "practiced": 0, "mastered": 0, "due": 0}
+    for uv, _ in rows:
+        if uv.status in status_counts:
+            status_counts[uv.status] += 1
+        if uv.next_review and uv.next_review <= now and uv.status != "unseen":
+            status_counts["due"] += 1
+
+    # Apply status filter AFTER computing stats
+    def _matches_filter(uv: UserVocab) -> bool:
+        if status == "all":
+            return True
+        if status == "due":
+            return bool(uv.next_review and uv.next_review <= now and uv.status != "unseen")
+        return uv.status == status
+
+    items: list[VocabGridItem] = []
+    for uv, vocab in rows:
+        if not _matches_filter(uv):
+            continue
+        is_due = bool(uv.next_review and uv.next_review <= now and uv.status != "unseen")
+        items.append(VocabGridItem(
+            vocab_id=vocab.id,
+            word=vocab.word,
+            reading=vocab.reading,
+            meaning=vocab.meaning,
+            jlpt_level=vocab.jlpt_level,
+            status=uv.status,
+            next_review=uv.next_review,
+            interval_days=uv.interval,
+            is_due=is_due,
+        ))
+
+    # Sort: due first, then introduced > practiced > mastered > unseen, then word
+    _status_order = {"introduced": 0, "practiced": 1, "mastered": 2, "unseen": 3}
+    items.sort(key=lambda x: (not x.is_due, _status_order.get(x.status, 9), x.word))
+
+    return VocabGridResponse(
+        items=items,
+        total=len(items),
+        stats=status_counts,
     )
 
 

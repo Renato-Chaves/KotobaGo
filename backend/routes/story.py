@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
+from core.error_analyzer import analyze_errors as _run_error_analysis
 from core.llm import router as llm_router
 from core.story_builder import (
     build_continuation_prompt,
@@ -12,7 +14,7 @@ from core.story_builder import (
     validate_vocab_budget,
 )
 from core.tokenizer import Token
-from db.models import Story, StorySession, UserVocab, Vocab, get_db
+from db.models import SessionSummary, Story, StorySession, UserVocab, Vocab, get_db
 from routes.vocab import _annotate_with_vocab_status
 
 router = APIRouter(prefix="/story", tags=["story"])
@@ -67,6 +69,43 @@ class TranslateResponse(BaseModel):
     translation: str
 
 
+class AnalyzeErrorsRequest(BaseModel):
+    session_id: int
+    user_input: str
+    user_id: int = 1
+
+
+class ErrorItem(BaseModel):
+    error_text: str
+    correction: str
+    type: str          # "critical" | "grammar" | "politeness" | "unnatural" | "stylistic"
+    explanation: str
+
+
+class ErrorAnalysisResponse(BaseModel):
+    session_id: int
+    errors: list[ErrorItem]
+    overall_feedback: str
+
+
+class SessionStatsOut(BaseModel):
+    turns: int
+    new_words_total: int
+    content_words_total: int
+    errors_by_type: dict[str, int]
+
+
+class SummaryRequest(BaseModel):
+    user_id: int = 1
+
+
+class SummaryResponse(BaseModel):
+    session_id: int
+    story_id: int
+    stats: SessionStatsOut
+    coach_note: str
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -116,6 +155,12 @@ async def start_story(req: StartStoryRequest, db: Session = Depends(get_db)):
         story_id=story.id,
         content_json=history,
         context_tokens_used=context_tokens,
+        session_meta={
+            "new_words_total": new_count,
+            "content_words_total": total,
+            "turn_count": 0,  # user turns only
+            "errors": [],
+        },
     )
     db.add(session)
 
@@ -183,6 +228,16 @@ async def continue_story(
     session.content_json = updated_history
     session.context_tokens_used = context_tokens
 
+    # Accumulate running stats for session summary
+    meta = dict(session.session_meta or {})
+    meta["new_words_total"] = meta.get("new_words_total", 0) + new_count
+    meta["content_words_total"] = meta.get("content_words_total", 0) + total
+    meta["turn_count"] = meta.get("turn_count", 0) + 1
+    if "errors" not in meta:
+        meta["errors"] = []
+    session.session_meta = meta
+    flag_modified(session, "session_meta")
+
     await _introduce_new_words(req.user_id, tokens, known_surfaces, db)
 
     db.commit()
@@ -231,6 +286,125 @@ async def translate_segment(req: TranslateRequest, db: Session = Depends(get_db)
     messages = [{"role": "user", "content": req.text}]
     translation = await llm_router.route("story", system, messages)
     return TranslateResponse(translation=translation.strip())
+
+
+@router.post("/analyze-errors", response_model=ErrorAnalysisResponse)
+async def analyze_errors_endpoint(
+    req: AnalyzeErrorsRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Analyse a learner's Japanese input for errors.
+    Stores the result in session_meta so the session summary can aggregate it.
+    """
+    session = db.query(StorySession).filter(StorySession.id == req.session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    from db.models import User
+    user = db.query(User).filter(User.id == req.user_id).first()
+    native = user.native_language if user else "en"
+
+    result = await _run_error_analysis(req.user_input, native)
+
+    # Persist errors in session_meta for use in session summary
+    meta = dict(session.session_meta or {})
+    if "errors" not in meta:
+        meta["errors"] = []
+
+    # Find the current turn index (number of user turns so far)
+    turn_index = meta.get("turn_count", 0)
+    meta["errors"].append({
+        "turn_index": turn_index,
+        "user_input": req.user_input,
+        "errors": result["errors"],
+        "overall_feedback": result["overall_feedback"],
+    })
+    session.session_meta = meta
+    flag_modified(session, "session_meta")
+    db.commit()
+
+    return ErrorAnalysisResponse(
+        session_id=req.session_id,
+        errors=[ErrorItem(**e) for e in result["errors"]],
+        overall_feedback=result["overall_feedback"],
+    )
+
+
+@router.post("/summary/{session_id}", response_model=SummaryResponse)
+async def get_session_summary(
+    session_id: int,
+    req: SummaryRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Generate (or retrieve cached) session summary.
+    Computes stats from session_meta and generates an AI coach note.
+    Persists to SessionSummary for future retrieval.
+    """
+    session = db.query(StorySession).filter(StorySession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    story = db.query(Story).filter(Story.id == session.story_id).first()
+
+    from db.models import User
+    user = db.query(User).filter(User.id == req.user_id).first()
+    native_lang = user.native_language if user else "en"
+
+    # Return cached summary if already generated
+    if session.summary:
+        cached = session.summary
+        return SummaryResponse(
+            session_id=session_id,
+            story_id=session.story_id,
+            stats=SessionStatsOut(**cached.stats_json),
+            coach_note=cached.coach_note or "",
+        )
+
+    meta = session.session_meta or {}
+    errors_log: list[dict] = meta.get("errors", [])
+
+    # Aggregate errors by type
+    errors_by_type: dict[str, int] = {
+        "critical": 0, "grammar": 0, "politeness": 0, "unnatural": 0, "stylistic": 0
+    }
+    for entry in errors_log:
+        for err in entry.get("errors", []):
+            etype = err.get("type", "grammar")
+            if etype in errors_by_type:
+                errors_by_type[etype] += 1
+
+    stats = SessionStatsOut(
+        turns=meta.get("turn_count", 0),
+        new_words_total=meta.get("new_words_total", 0),
+        content_words_total=meta.get("content_words_total", 0),
+        errors_by_type=errors_by_type,
+    )
+
+    # Generate AI coach note
+    coach_note = await _generate_coach_note(session, story, stats, errors_log, native_lang)
+
+    # Persist
+    summary_record = SessionSummary(
+        session_id=session_id,
+        stats_json=stats.model_dump(),
+        coach_note=coach_note,
+    )
+    db.add(summary_record)
+
+    # Mark story as completed
+    if story:
+        story.status = "completed"
+
+    db.commit()
+
+    return SummaryResponse(
+        session_id=session_id,
+        story_id=session.story_id,
+        stats=stats,
+        coach_note=coach_note,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +523,57 @@ def _build_opening_message(theme: str | None, grammar_focus: str | None) -> str:
     if grammar_focus:
         parts.append(f"Naturally incorporate grammar patterns related to: {grammar_focus}.")
     return " ".join(parts)
+
+
+async def _generate_coach_note(
+    session: "StorySession",
+    story: "Story | None",
+    stats: SessionStatsOut,
+    errors_log: list[dict],
+    native_lang: str = "en",
+) -> str:
+    """Generate a personalised coach note summarising the session."""
+    lang_name = {"pt": "Portuguese", "en": "English"}.get(native_lang, "English")
+    total_errors = sum(stats.errors_by_type.values())
+    top_error_type = (
+        max(stats.errors_by_type, key=lambda k: stats.errors_by_type[k])
+        if total_errors > 0 else None
+    )
+
+    error_summary = (
+        f"{total_errors} error(s) found — most common type: {top_error_type}."
+        if total_errors > 0 else "No errors detected."
+    )
+
+    # Include the last few story exchanges for context
+    history = session.content_json or []
+    recent_exchanges = history[-6:]  # last 3 turns
+    history_text = "\n".join(
+        f"{m['role'].upper()}: {m['content']}" for m in recent_exchanges
+    )
+
+    system = (
+        f"You are an encouraging Japanese language coach. "
+        f"Write a short (2–4 sentence) personalised coach note for the learner "
+        f"based on their practice session stats. Be specific, positive, and actionable. "
+        f"Write in {lang_name}. "
+        f"Output only the coach note text — no headers, no bullet points."
+    )
+    prompt = (
+        f"Session stats:\n"
+        f"- Turns taken: {stats.turns}\n"
+        f"- New words encountered: {stats.new_words_total}\n"
+        f"- Content words in story: {stats.content_words_total}\n"
+        f"- {error_summary}\n\n"
+        f"Recent story excerpt:\n{history_text}"
+    )
+    messages = [{"role": "user", "content": prompt}]
+
+    try:
+        note = await llm_router.route("coach_note", system, messages)
+        return note.strip()
+    except Exception:
+        return "Great work completing this session! Keep reading and writing Japanese every day."
 
 
 def _difficulty_hint_text(hint: str | None) -> str | None:

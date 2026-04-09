@@ -147,6 +147,9 @@ class StorySession(Base):
     content_json = Column(JSON, nullable=False, default=list)       # full message history
     compressed_summary = Column(Text, nullable=True)                # auto-generated on compression
     context_tokens_used = Column(Integer, nullable=False, default=0)
+    # Running stats accumulated across turns (for session summary)
+    # Structure: {new_words_total, content_words_total, turn_count, errors: [{turn_index, errors: [...], overall_feedback}]}
+    session_meta = Column(JSON, nullable=True, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     story = relationship("Story", back_populates="sessions")

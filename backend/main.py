@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from db.models import init_db
-from routes import story, vocab
+from routes import story, user, vocab
 
 app = FastAPI(title="KotobaGo API", version="0.1.0")
 
@@ -16,6 +16,7 @@ app.add_middleware(
 
 app.include_router(vocab.router)
 app.include_router(story.router)
+app.include_router(user.router)
 
 
 @app.on_event("startup")
