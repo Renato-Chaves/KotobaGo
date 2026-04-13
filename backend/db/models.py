@@ -39,6 +39,7 @@ class User(Base):
     jlpt_goal = Column(Enum("N5", "N4", "N3", "N2", "N1"), nullable=False)
     target_list_id = Column(Integer, ForeignKey("lists.id"), nullable=True)
     ai_context = Column(Text, nullable=True)                   # editable AI paragraph
+    model_settings = Column(JSON, nullable=True)               # per-task Ollama model overrides
     error_analysis_mode = Column(
         Enum("on_call", "auto"), nullable=False, default="on_call"
     )
@@ -131,6 +132,7 @@ class Story(Base):
     title = Column(String, nullable=True)
     theme = Column(String, nullable=True)
     grammar_focus = Column(String, nullable=True)
+    brief = Column(JSON, nullable=True)              # generated at story start, anchors the narrative
     status = Column(
         Enum("active", "completed", "abandoned"), nullable=False, default="active"
     )

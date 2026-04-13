@@ -95,11 +95,22 @@ class LLMRouter:
         self._primary_source: Source = os.getenv("LLM_SOURCE", "local")  # type: ignore
         self._primary = LLMClient(self._primary_source)
 
-    async def route(self, task: TaskType, system: str, messages: list[Message]) -> str:
-        client = self._client_for(task)
+    async def route(
+        self,
+        task: TaskType,
+        system: str,
+        messages: list[Message],
+        model_override: str | None = None,
+    ) -> str:
+        client = self._client_for(task, model_override=model_override)
         return await client.chat(system, messages)
 
-    def _client_for(self, task: TaskType) -> LLMClient:
+    def _client_for(self, task: TaskType, model_override: str | None = None) -> LLMClient:
+        # If a per-call model override is given and the source is local, create a
+        # lightweight temp client with that model. LLMClient has no persistent
+        # state so this is safe to do per-call.
+        if model_override and self._primary_source == "local":
+            return LLMClient("local", model=model_override)
         # Coach notes can be routed to a cloud API for better prose.
         # Everything else runs locally regardless of LLM_SOURCE.
         if task == "coach_note":

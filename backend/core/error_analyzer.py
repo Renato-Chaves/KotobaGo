@@ -16,6 +16,7 @@ import json
 import re
 
 from core.llm import router as llm_router
+from core.romaji import convert_to_japanese, is_romaji_heavy
 
 # ---------------------------------------------------------------------------
 # Types (plain dicts — converted to Pydantic on the route layer)
@@ -59,19 +60,31 @@ Rules:
 async def analyze_errors(
     text: str,
     native_lang: str = "en",
+    model_override: str | None = None,
 ) -> dict:
     """
-    Returns {"errors": [...], "overall_feedback": "..."}.
+    Returns {"errors": [...], "overall_feedback": "...", "converted": str | None}.
+    If the input is romaji-heavy, converts to Japanese first then analyses the result.
     On LLM or parse failure returns an empty-error result rather than crashing.
     """
+    converted: str | None = None
+    analysis_text = text
+
+    if is_romaji_heavy(text):
+        analysis_text = await convert_to_japanese(text, model_override=model_override)
+        if analysis_text != text:
+            converted = analysis_text
+
     system = _system_prompt(native_lang)
-    messages = [{"role": "user", "content": text}]
+    messages = [{"role": "user", "content": analysis_text}]
 
     try:
-        raw = await llm_router.route("error_analysis", system, messages)
-        return _parse_response(raw)
+        raw = await llm_router.route("error_analysis", system, messages, model_override=model_override)
+        result = _parse_response(raw)
+        result["converted"] = converted
+        return result
     except Exception:
-        return {"errors": [], "overall_feedback": "Could not analyse text at this time."}
+        return {"errors": [], "overall_feedback": "Could not analyse text at this time.", "converted": converted}
 
 
 def _parse_response(raw: str) -> dict:

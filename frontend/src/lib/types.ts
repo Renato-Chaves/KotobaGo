@@ -19,6 +19,7 @@ export interface StoryResponse {
   context_usage_pct: number;
   new_word_count: number;
   total_content_words: number;
+  converted_input?: string; // present when the user typed romaji and it was converted
 }
 
 export type FuriganaMode = "full" | "known_only" | "none";
@@ -51,6 +52,7 @@ export interface ErrorAnalysisResponse {
   session_id: number;
   errors: ErrorItem[];
   overall_feedback: string;
+  converted_input?: string; // present when romaji was converted before analysis
 }
 
 // Session summary
@@ -61,11 +63,20 @@ export interface SessionStats {
   errors_by_type: Record<ErrorType, number>;
 }
 
+export interface WordEntry {
+  vocab_id: number;
+  word: string;
+  reading: string;
+  meaning: string;
+}
+
 export interface SessionSummaryResponse {
   session_id: number;
   story_id: number;
   stats: SessionStats;
   coach_note: string;
+  new_words: WordEntry[];
+  known_words: WordEntry[];
 }
 
 export type ErrorAnalysisMode = "on_call" | "auto";
@@ -80,6 +91,7 @@ export interface UserProfile {
   error_analysis_mode: ErrorAnalysisMode;
   furigana_mode: FuriganaMode;
   dark_mode: boolean;
+  model_settings: Record<string, string | null> | null;
 }
 
 export interface UpdateProfileRequest {
@@ -88,6 +100,11 @@ export interface UpdateProfileRequest {
   ai_context?: string;
   error_analysis_mode?: ErrorAnalysisMode;
   furigana_mode?: FuriganaMode;
+  model_settings?: Record<string, string | null>;
+}
+
+export interface AvailableModelsResponse {
+  models: string[];
 }
 
 // Vocabulary grid

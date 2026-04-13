@@ -1,6 +1,7 @@
 "use client";
 
-import type { SessionSummaryResponse } from "@/lib/types";
+import { useState } from "react";
+import type { SessionSummaryResponse, WordEntry } from "@/lib/types";
 
 interface Props {
   summary: SessionSummaryResponse;
@@ -16,7 +17,8 @@ const ERROR_LABELS: Record<string, { label: string; color: string }> = {
 };
 
 export function SessionSummaryScreen({ summary, onNewStory }: Props) {
-  const { stats, coach_note } = summary;
+  const { stats, coach_note, new_words, known_words } = summary;
+  const [knownExpanded, setKnownExpanded] = useState(false);
   const totalErrors = Object.values(stats.errors_by_type).reduce((a, b) => a + b, 0);
   const accuracy =
     stats.turns > 0 && totalErrors <= stats.turns
@@ -67,6 +69,40 @@ export function SessionSummaryScreen({ summary, onNewStory }: Props) {
         </div>
       )}
 
+      {/* New words this session */}
+      {new_words && new_words.length > 0 && (
+        <div className="w-full bg-zinc-900 border border-sky-900/50 rounded-xl p-4">
+          <p className="text-xs text-sky-400 uppercase tracking-widest mb-3">
+            New Words this session ({new_words.length})
+          </p>
+          <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
+            {new_words.map((w, idx) => (
+              <WordRow key={`new-${idx}-${w.word}`} entry={w} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Known words seen */}
+      {known_words && known_words.length > 0 && (
+        <div className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+          <button
+            onClick={() => setKnownExpanded((v) => !v)}
+            className="w-full flex items-center justify-between text-xs text-zinc-500 uppercase tracking-widest"
+          >
+            <span>Known Words seen ({known_words.length})</span>
+            <span>{knownExpanded ? "▲" : "▼"}</span>
+          </button>
+          {knownExpanded && (
+            <div className="flex flex-col gap-1.5 mt-3 max-h-48 overflow-y-auto">
+              {known_words.map((w, idx) => (
+                <WordRow key={`known-${idx}-${w.word}`} entry={w} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Coach note */}
       {coach_note && (
         <div className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4">
@@ -84,6 +120,14 @@ export function SessionSummaryScreen({ summary, onNewStory }: Props) {
         >
           Start New Story
         </button>
+        <a
+          href="/"
+          className="w-full px-6 py-3 rounded-xl border border-zinc-700
+                     text-zinc-300 hover:border-zinc-500 hover:text-white
+                     font-medium transition-colors text-center"
+        >
+          Return to Home
+        </a>
       </div>
     </div>
   );
@@ -94,6 +138,16 @@ function StatCard({ value, label }: { value: string | number; label: string }) {
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-center">
       <p className="text-2xl font-bold tabular-nums">{value}</p>
       <p className="text-xs text-zinc-500 mt-1">{label}</p>
+    </div>
+  );
+}
+
+function WordRow({ entry }: { entry: WordEntry }) {
+  return (
+    <div className="flex items-baseline gap-2 text-sm">
+      <span className="font-medium text-zinc-100 shrink-0">{entry.word}</span>
+      <span className="text-zinc-500 shrink-0">{entry.reading}</span>
+      <span className="text-zinc-400 truncate">{entry.meaning}</span>
     </div>
   );
 }

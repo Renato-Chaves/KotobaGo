@@ -37,10 +37,12 @@ interface StoryTurn {
 
 interface UserTurn {
   type: "user";
-  text: string;
+  text: string;           // what the user typed (may be romaji)
+  displayText?: string;   // converted Japanese, when romaji was typed
   // Error analysis — undefined = not yet run, null = loading, array = result
   errors?: ErrorItem[] | null;
   overallFeedback?: string;
+  convertedByAnalysis?: string; // converted text surfaced from error analysis
 }
 
 type Turn = StoryTurn | UserTurn;
@@ -119,7 +121,13 @@ export function StoryCanvas() {
       setTurns((prev) =>
         prev.map((t, i) =>
           i === turnIndex && t.type === "user"
-            ? { ...t, errors: res.errors, overallFeedback: res.overall_feedback }
+            ? {
+                ...t,
+                errors: res.errors,
+                overallFeedback: res.overall_feedback,
+                // Surface conversion if it wasn't already set by the story response
+                displayText: t.displayText ?? res.converted_input ?? t.displayText,
+              }
             : t
         )
       );
@@ -153,6 +161,16 @@ export function StoryCanvas() {
         difficulty_hint: pendingHint ?? undefined,
       });
       setPendingHint(null);
+
+      // If the backend converted romaji → Japanese, update the user turn to show it
+      if (res.converted_input) {
+        setTurns((prev) => prev.map((t, i) =>
+          i === userTurnIndex && t.type === "user"
+            ? { ...t, displayText: res.converted_input }
+            : t
+        ));
+      }
+
       setTurns((prev) => [...prev, toStoryTurn(res)]);
 
       // Auto mode: run error analysis immediately after the story responds
@@ -172,6 +190,21 @@ export function StoryCanvas() {
 
   const handleDifficultyHint = useCallback((hint: DifficultyHint) => {
     setPendingHint(hint);
+  }, []);
+
+  // --- Text selection → dictionary sidebar ---
+
+  const handleTextSelection = useCallback(async () => {
+    const selected = window.getSelection()?.toString().trim();
+    if (!selected) return;
+
+    try {
+      const res = await api.tokenize(selected);
+      const match = res.tokens.find((t) => t.is_content && t.vocab_id !== null);
+      if (match) setSelectedToken(match);
+    } catch {
+      // Silent fail — don't disrupt the story
+    }
   }, []);
 
   // --- Furigana toggle (cycles through 3 modes) ---
@@ -299,7 +332,7 @@ export function StoryCanvas() {
         </div>
 
         {/* Turn list */}
-        <div className="flex flex-col gap-4 flex-1">
+        <div className="flex flex-col gap-4 flex-1" onMouseUp={handleTextSelection}>
           {turns.map((turn, i) => {
             if (turn.type === "user") {
               const hasResult = turn.errors !== undefined;
@@ -310,7 +343,12 @@ export function StoryCanvas() {
                 <div key={i} className="flex flex-col items-end gap-1">
                   <div className="max-w-[75%] px-4 py-2.5 rounded-2xl rounded-tr-sm
                                   bg-sky-700 text-white text-base leading-relaxed">
-                    {turn.text}
+                    {turn.displayText ?? turn.text}
+                    {turn.displayText && turn.displayText !== turn.text && (
+                      <p className="text-sky-200/60 text-xs mt-1 font-normal">
+                        {turn.text}
+                      </p>
+                    )}
                   </div>
 
                   {/* On Call mode: show "Check" button if analysis not yet run */}

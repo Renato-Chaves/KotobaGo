@@ -133,6 +133,12 @@ function VocabStatsBar() {
 // Main component
 // ---------------------------------------------------------------------------
 
+const AI_TASKS = [
+  { key: "story",          label: "Story generation" },
+  { key: "error_analysis", label: "Error analysis" },
+  { key: "coach_note",     label: "Coach note" },
+] as const;
+
 export function ProfileSettings() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -146,6 +152,10 @@ export function ProfileSettings() {
   const [errorMode, setErrorMode] = useState<ErrorAnalysisMode>("on_call");
   const [furiganaMode, setFuriganaMode] = useState<FuriganaMode>("full");
 
+  // Per-task model overrides — null means "use env default"
+  const [modelSettings, setModelSettings] = useState<Record<string, string | null>>({});
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+
   useEffect(() => {
     api.getProfile()
       .then((p) => {
@@ -155,10 +165,20 @@ export function ProfileSettings() {
         setAiContext(p.ai_context ?? "");
         setErrorMode(p.error_analysis_mode);
         setFuriganaMode(p.furigana_mode);
+        setModelSettings(p.model_settings ?? {});
       })
       .catch(() => {})
       .finally(() => setLoading(false));
+
+    // Fetch available Ollama models silently — hide section if unavailable
+    api.getAvailableModels()
+      .then((r) => setAvailableModels(r.models))
+      .catch(() => {});
   }, []);
+
+  const handleModelChange = (task: string, value: string) => {
+    setModelSettings((prev) => ({ ...prev, [task]: value === "" ? null : value }));
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -170,8 +190,10 @@ export function ProfileSettings() {
         ai_context: aiContext,
         error_analysis_mode: errorMode,
         furigana_mode: furiganaMode,
+        model_settings: modelSettings,
       });
       setProfile(updated);
+      setModelSettings(updated.model_settings ?? {});
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch {
@@ -277,6 +299,31 @@ export function ProfileSettings() {
             Be specific — the more context, the more personalised your experience.
           </p>
         </Section>
+
+        {/* AI Models — only shown when Ollama has models available */}
+        {availableModels.length > 0 && (
+          <Section title="AI Models">
+            {AI_TASKS.map(({ key, label }) => (
+              <Field key={key} label={label}>
+                <select
+                  value={modelSettings[key] ?? ""}
+                  onChange={(e) => handleModelChange(key, e.target.value)}
+                  className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm
+                             text-zinc-200 focus:outline-none focus:border-zinc-600 w-fit"
+                >
+                  <option value="">Default (env)</option>
+                  {availableModels.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </Field>
+            ))}
+            <p className="text-xs text-zinc-600">
+              Override the Ollama model used for each task. "Default (env)" uses the model set
+              in the server environment variable.
+            </p>
+          </Section>
+        )}
 
         {/* Vocabulary stats */}
         <Section title="Vocabulary Progress">

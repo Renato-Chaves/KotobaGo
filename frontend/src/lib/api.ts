@@ -1,4 +1,4 @@
-import type { ConfidenceRating, ErrorAnalysisResponse, SessionSummaryResponse, StoryResponse, UpdateProfileRequest, UserProfile, VocabGridResponse, WordLookup } from "./types";
+import type { AvailableModelsResponse, ConfidenceRating, ErrorAnalysisResponse, SessionSummaryResponse, StoryResponse, Token, UpdateProfileRequest, UserProfile, VocabGridResponse, WordLookup } from "./types";
 
 // In Client Components this env var is available (NEXT_PUBLIC_ prefix).
 // Server Components use API_URL_INTERNAL instead.
@@ -79,4 +79,10 @@ export const api = {
 
   updateProfile: (updates: UpdateProfileRequest): Promise<UserProfile> =>
     patch("/users/me?user_id=1", updates),
+
+  tokenize: (text: string): Promise<{ tokens: Token[] }> =>
+    post("/vocab/tokenize", { text, user_id: 1 }),
+
+  getAvailableModels: (): Promise<AvailableModelsResponse> =>
+    get("/users/models"),
 };
