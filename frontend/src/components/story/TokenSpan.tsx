@@ -12,9 +12,10 @@ interface Props {
 // "unseen" = solid (never seen before), "new" = dashed (seen, not practiced),
 // "known" = no underline. Non-content words (particles etc.) never underlined.
 const underlineClass: Record<string, string> = {
-  unseen: "underline decoration-2 decoration-sky-400 underline-offset-4",
-  new:    "underline decoration-1 decoration-dashed decoration-sky-400/60 underline-offset-4",
-  known:  "",
+  unseen:         "underline decoration-2 decoration-sky-400 underline-offset-4",
+  new:            "underline decoration-1 decoration-dashed decoration-sky-400/60 underline-offset-4",
+  known:          "",
+  lesson_example: "underline decoration-2 decoration-amber-400 underline-offset-4",
 };
 
 export function TokenSpan({ token, furiganaMode, onSelect }: Props) {

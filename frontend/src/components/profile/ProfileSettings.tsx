@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { ErrorAnalysisMode, FuriganaMode, UserProfile } from "@/lib/types";
+import type { ErrorAnalysisMode, FuriganaMode, StoryConfig, StoryLength, UserProfile } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -156,6 +156,11 @@ export function ProfileSettings() {
   const [modelSettings, setModelSettings] = useState<Record<string, string | null>>({});
   const [availableModels, setAvailableModels] = useState<string[]>([]);
 
+  // Story prompt config
+  const [storyTemperature, setStoryTemperature] = useState(0.7);
+  const [storyLength, setStoryLength] = useState<StoryLength>("medium");
+  const [storyNewWordPct, setStoryNewWordPct] = useState(15);
+
   useEffect(() => {
     api.getProfile()
       .then((p) => {
@@ -166,6 +171,9 @@ export function ProfileSettings() {
         setErrorMode(p.error_analysis_mode);
         setFuriganaMode(p.furigana_mode);
         setModelSettings(p.model_settings ?? {});
+        setStoryTemperature(p.story_config?.temperature ?? 0.7);
+        setStoryLength(p.story_config?.story_length ?? "medium");
+        setStoryNewWordPct(p.story_config?.new_word_pct ?? 15);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -191,9 +199,17 @@ export function ProfileSettings() {
         error_analysis_mode: errorMode,
         furigana_mode: furiganaMode,
         model_settings: modelSettings,
+        story_config: {
+          temperature: storyTemperature,
+          story_length: storyLength,
+          new_word_pct: storyNewWordPct,
+        },
       });
       setProfile(updated);
       setModelSettings(updated.model_settings ?? {});
+      setStoryTemperature(updated.story_config?.temperature ?? 0.7);
+      setStoryLength(updated.story_config?.story_length ?? "medium");
+      setStoryNewWordPct(updated.story_config?.new_word_pct ?? 15);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch {
@@ -324,6 +340,51 @@ export function ProfileSettings() {
             </p>
           </Section>
         )}
+
+        {/* Story prompt tuning */}
+        <Section title="Story Prompt">
+          <Field label={`Temperature — ${storyTemperature.toFixed(1)}`}>
+            <input
+              type="range"
+              min={0} max={20} step={1}
+              value={Math.round(storyTemperature * 10)}
+              onChange={(e) => setStoryTemperature(Number(e.target.value) / 10)}
+              className="w-full accent-sky-500"
+            />
+            <div className="flex justify-between text-xs text-zinc-600">
+              <span>0.0 — predictable</span>
+              <span>2.0 — creative</span>
+            </div>
+          </Field>
+          <Field label="Segment length">
+            <ToggleGroup<StoryLength>
+              options={[
+                { value: "tiny",   label: "Tiny (1–2)" },
+                { value: "short",  label: "Short (3–5)" },
+                { value: "medium", label: "Medium (5–8)" },
+                { value: "long",   label: "Long (8–12)" },
+              ]}
+              value={storyLength}
+              onChange={setStoryLength}
+            />
+          </Field>
+          <Field label={`New word target — ${storyNewWordPct}%`}>
+            <input
+              type="range"
+              min={0} max={50} step={5}
+              value={storyNewWordPct}
+              onChange={(e) => setStoryNewWordPct(Number(e.target.value))}
+              className="w-full accent-sky-500"
+            />
+            <div className="flex justify-between text-xs text-zinc-600">
+              <span>0% — only known words</span>
+              <span>50% — heavy new vocab</span>
+            </div>
+          </Field>
+          <p className="text-xs text-zinc-600">
+            These settings apply on the next story start. Temperature &amp; length take effect each turn.
+          </p>
+        </Section>
 
         {/* Vocabulary stats */}
         <Section title="Vocabulary Progress">

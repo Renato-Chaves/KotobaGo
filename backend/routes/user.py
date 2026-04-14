@@ -24,6 +24,7 @@ class UserProfile(BaseModel):
     furigana_mode: str         # "full" | "known_only" | "none"
     dark_mode: bool
     model_settings: dict | None  # per-task Ollama model overrides
+    story_config: dict | None    # story prompt tuning: temperature, story_length, new_word_pct
 
 
 class UpdateProfileRequest(BaseModel):
@@ -33,6 +34,7 @@ class UpdateProfileRequest(BaseModel):
     error_analysis_mode: str | None = None
     furigana_mode: str | None = None
     model_settings: dict | None = None  # merged into existing, not replaced wholesale
+    story_config: dict | None = None    # merged into existing
 
 
 class AvailableModelsResponse(BaseModel):
@@ -102,6 +104,23 @@ async def update_profile(
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(user, "model_settings")
 
+    if req.story_config is not None:
+        _VALID_STORY_LENGTHS = {"tiny", "short", "medium", "long"}
+        current_sc = dict(user.story_config or {})
+        if "temperature" in req.story_config:
+            t = float(req.story_config["temperature"])
+            current_sc["temperature"] = max(0.0, min(2.0, t))
+        if "story_length" in req.story_config:
+            sl = req.story_config["story_length"]
+            if sl in _VALID_STORY_LENGTHS:
+                current_sc["story_length"] = sl
+        if "new_word_pct" in req.story_config:
+            pct = int(req.story_config["new_word_pct"])
+            current_sc["new_word_pct"] = max(0, min(50, pct))
+        user.story_config = current_sc
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(user, "story_config")
+
     db.commit()
     db.refresh(user)
     return _to_profile(user)
@@ -140,4 +159,5 @@ def _to_profile(user: User) -> UserProfile:
         furigana_mode=user.furigana_mode,
         dark_mode=user.dark_mode,
         model_settings=user.model_settings,
+        story_config=user.story_config,
     )

@@ -2,7 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from db.models import init_db
-from routes import story, user, vocab
+from db.seed.lessons.no_particle import seed as seed_no_particle
+from routes import lessons, story, user, vocab
 
 app = FastAPI(title="KotobaGo API", version="0.1.0")
 
@@ -17,11 +18,13 @@ app.add_middleware(
 app.include_router(vocab.router)
 app.include_router(story.router)
 app.include_router(user.router)
+app.include_router(lessons.router)
 
 
 @app.on_event("startup")
 async def startup():
     init_db()
+    seed_no_particle()
 
 
 @app.get("/health")

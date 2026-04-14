@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 # ---------------------------------------------------------------------------
 
 Source = Literal["local", "anthropic", "openai"]
-TaskType = Literal["story", "error_analysis", "context_compression", "coach_note"]
+TaskType = Literal["story", "error_analysis", "context_compression", "coach_note", "lesson"]
 Message = dict  # {"role": "user" | "assistant", "content": str}
 
 
@@ -23,24 +23,26 @@ class LLMClient:
         self.source = source
         self.model = model or _default_model(source)
 
-    async def chat(self, system: str, messages: list[Message]) -> str:
+    async def chat(self, system: str, messages: list[Message], temperature: float | None = None) -> str:
         if self.source == "local":
-            return await self._ollama(system, messages)
+            return await self._ollama(system, messages, temperature)
         elif self.source == "anthropic":
-            return await self._claude(system, messages)
+            return await self._claude(system, messages, temperature)
         elif self.source == "openai":
-            return await self._openai(system, messages)
+            return await self._openai(system, messages, temperature)
         raise ValueError(f"Unknown LLM source: {self.source}")
 
     # --- Ollama ---
 
-    async def _ollama(self, system: str, messages: list[Message]) -> str:
+    async def _ollama(self, system: str, messages: list[Message], temperature: float | None = None) -> str:
         url = f"{os.getenv('OLLAMA_BASE_URL', 'http://ollama:11434')}/api/chat"
-        payload = {
+        payload: dict = {
             "model": self.model,
             "stream": False,
             "messages": [{"role": "system", "content": system}, *messages],
         }
+        if temperature is not None:
+            payload["options"] = {"temperature": temperature}
         async with httpx.AsyncClient(timeout=120.0) as client:
             res = await client.post(url, json=payload)
             res.raise_for_status()
@@ -48,24 +50,30 @@ class LLMClient:
 
     # --- Anthropic / Claude ---
 
-    async def _claude(self, system: str, messages: list[Message]) -> str:
+    async def _claude(self, system: str, messages: list[Message], temperature: float | None = None) -> str:
         client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        response = await client.messages.create(
+        kwargs: dict = dict(
             model=self.model,
             max_tokens=4096,
             system=system,
             messages=messages,
         )
+        if temperature is not None:
+            kwargs["temperature"] = max(0.0, min(1.0, temperature))  # Anthropic clamps to 0–1
+        response = await client.messages.create(**kwargs)
         return response.content[0].text
 
     # --- OpenAI ---
 
-    async def _openai(self, system: str, messages: list[Message]) -> str:
+    async def _openai(self, system: str, messages: list[Message], temperature: float | None = None) -> str:
         client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = await client.chat.completions.create(
+        kwargs: dict = dict(
             model=self.model,
             messages=[{"role": "system", "content": system}, *messages],
         )
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        response = await client.chat.completions.create(**kwargs)
         return response.choices[0].message.content or ""
 
 
@@ -101,9 +109,10 @@ class LLMRouter:
         system: str,
         messages: list[Message],
         model_override: str | None = None,
+        temperature: float | None = None,
     ) -> str:
         client = self._client_for(task, model_override=model_override)
-        return await client.chat(system, messages)
+        return await client.chat(system, messages, temperature=temperature)
 
     def _client_for(self, task: TaskType, model_override: str | None = None) -> LLMClient:
         # If a per-call model override is given and the source is local, create a

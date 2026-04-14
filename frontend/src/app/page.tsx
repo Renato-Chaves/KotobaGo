@@ -37,6 +37,13 @@ export default function Home() {
           Start Story →
         </a>
         <a
+          href="/lessons"
+          className="px-6 py-3 rounded-xl bg-amber-700 hover:bg-amber-600
+                     text-white font-medium transition-colors"
+        >
+          Lessons →
+        </a>
+        <a
           href="/vocab"
           className="px-6 py-3 rounded-xl border border-zinc-700 hover:border-zinc-500
                      text-zinc-300 hover:text-zinc-100 font-medium transition-colors"

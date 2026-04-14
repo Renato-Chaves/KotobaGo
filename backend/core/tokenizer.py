@@ -7,7 +7,7 @@ import fugashi
 # Types
 # ---------------------------------------------------------------------------
 
-VocabStatus = Literal["known", "new", "unseen"]
+VocabStatus = Literal["known", "new", "unseen", "lesson_example"]
 
 
 @dataclass

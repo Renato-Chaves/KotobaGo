@@ -1,4 +1,4 @@
-import type { AvailableModelsResponse, ConfidenceRating, ErrorAnalysisResponse, SessionSummaryResponse, StoryResponse, Token, UpdateProfileRequest, UserProfile, VocabGridResponse, WordLookup } from "./types";
+import type { AvailableModelsResponse, ContinueLessonResponse, ConfidenceRating, ErrorAnalysisResponse, ExportToStoryResponse, Lesson, LessonModule, LessonSummaryResponse, SessionSummaryResponse, StartLessonResponse, StoryResponse, SwitchModuleResponse, Token, UpdateProfileRequest, UserProfile, VocabGridResponse, WordLookup } from "./types";
 
 // In Client Components this env var is available (NEXT_PUBLIC_ prefix).
 // Server Components use API_URL_INTERNAL instead.
@@ -85,4 +85,38 @@ export const api = {
 
   getAvailableModels: (): Promise<AvailableModelsResponse> =>
     get("/users/models"),
+
+  // -------------------------------------------------------------------------
+  // Lessons
+  // -------------------------------------------------------------------------
+
+  listLessons: (): Promise<Lesson[]> =>
+    get("/lessons"),
+
+  startLesson: (lesson_id: number): Promise<StartLessonResponse> =>
+    post(`/lessons/${lesson_id}/start`, { user_id: 1 }),
+
+  continueLesson: (
+    session_id: number,
+    params: { user_input: string }
+  ): Promise<ContinueLessonResponse> =>
+    post(`/lessons/session/${session_id}/continue`, { user_id: 1, ...params }),
+
+  switchModule: (
+    session_id: number,
+    target_module: LessonModule
+  ): Promise<SwitchModuleResponse> =>
+    post(`/lessons/session/${session_id}/switch-module`, { target_module }),
+
+  analyzeLessonErrors: (
+    session_id: number,
+    user_input: string
+  ): Promise<ErrorAnalysisResponse> =>
+    post(`/lessons/session/${session_id}/analyze-errors`, { session_id, user_input, user_id: 1 }),
+
+  getLessonSummary: (session_id: number): Promise<LessonSummaryResponse> =>
+    post(`/lessons/session/${session_id}/summary`, { user_id: 1 }),
+
+  exportLessonToStory: (session_id: number): Promise<ExportToStoryResponse> =>
+    post(`/lessons/session/${session_id}/export-to-story`, { user_id: 1 }),
 };

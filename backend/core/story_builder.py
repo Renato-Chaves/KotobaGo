@@ -39,6 +39,14 @@ class StorySegment:
 _MAX_HISTORY_MESSAGES = 8
 
 
+_STORY_LENGTH_MAP = {
+    "tiny":   "1–2 sentences",
+    "short":  "3–5 sentences",
+    "medium": "5–8 sentences",
+    "long":   "8–12 sentences",
+}
+
+
 def build_system_prompt(
     user: User,
     confident_vocab: set[str],
@@ -46,6 +54,7 @@ def build_system_prompt(
     new_word_pct: int,
     story_brief: dict | None = None,
     due_vocab: list[str] | None = None,
+    story_length: str = "medium",
 ) -> str:
     """
     Build the system prompt for story generation.
@@ -57,6 +66,7 @@ def build_system_prompt(
         new_word_pct:    Target percentage of new words (0–100).
         story_brief:     Optional narrative anchor dict generated at story start.
         due_vocab:       Words due for SM-2 review — include at least one naturally.
+        story_length:    Segment length: "short" (3–5), "medium" (5–8), "long" (8–12).
     """
     # Cap each tier to keep token cost manageable
     confident_block = ", ".join(list(confident_vocab)[:150]) if confident_vocab else "none yet"
@@ -79,6 +89,7 @@ def build_system_prompt(
         )
 
     ai_context_text = user.ai_context or f"Japanese learner at {user.jlpt_goal} level."
+    length_str = _STORY_LENGTH_MAP.get(story_length, _STORY_LENGTH_MAP["medium"])
 
     return f"""LANGUAGE: Write ALL story content and ALL choices in Japanese only. No English. No romaji. No mixed language.
 OUTPUT: Respond ONLY with a JSON object — no text before or after it.
@@ -98,14 +109,14 @@ STORY RULES:
 - Second person: あなた is always the protagonist.
 - Each continuation: advance the story to the NEXT beat — never repeat or restate what already happened.
 - End each segment at the exact moment of decision — someone waiting for your reply, a choice in the next breath.
-- 5–8 sentences. Develop the scene before the decision point.
+- {length_str}. Develop the scene before the decision point.
 - Choices: specific Japanese dialogue phrases (「...」). Not action descriptions.
 - Choices differ in register, strategy, or character — not just politeness.
 - Use emotional expressions naturally (ドキドキ、ほっとした…). Stay in the story world; never explain grammar.
 - Supporting characters: Japanese names only (さくら、たろう…).
 
 JSON FORMAT:
-{{"story_text": "5–8 sentences in Japanese", "choices": ["「...」", "「...」", "「...」"]}}"""
+{{"story_text": "{length_str} in Japanese", "choices": ["「...」", "「...」", "「...」"]}}"""
 
 
 async def build_continuation_prompt(

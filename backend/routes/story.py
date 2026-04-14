@@ -133,6 +133,11 @@ async def start_story(req: StartStoryRequest, db: Session = Depends(get_db)):
     user = get_user_or_404(req.user_id, db)
     model_settings = user.model_settings or {}
     story_model: str | None = model_settings.get("story") or None
+    sc = user.story_config or {}
+    story_temperature: float | None = sc.get("temperature") or None
+    story_length: str = sc.get("story_length") or "medium"
+    # new_word_pct: request value wins; fall back to user's saved default
+    new_word_pct = req.new_word_pct if req.new_word_pct != _DEFAULT_NEW_WORD_PCT else int(sc.get("new_word_pct", req.new_word_pct))
 
     confident_vocab, fragile_vocab = get_vocab_tiers(req.user_id, db)
     known_surfaces = confident_vocab | fragile_vocab  # union for budget validation
@@ -145,15 +150,17 @@ async def start_story(req: StartStoryRequest, db: Session = Depends(get_db)):
     messages = [{"role": "user", "content": opening}]
 
     system_prompt = build_system_prompt(
-        user, confident_vocab, fragile_vocab, req.new_word_pct, story_brief=brief
+        user, confident_vocab, fragile_vocab, new_word_pct,
+        story_brief=brief, story_length=story_length,
     )
 
     story_text, choices, tokens, new_count, total = await _generate_with_retry(
         system_prompt=system_prompt,
         messages=messages,
         known_surfaces=known_surfaces,
-        target_pct=req.new_word_pct,
+        target_pct=new_word_pct,
         model_override=story_model,
+        temperature=story_temperature,
     )
     tokens = _annotate_with_vocab_status(tokens, req.user_id, db)
 
@@ -229,6 +236,10 @@ async def continue_story(
     model_settings = user.model_settings or {}
     story_model: str | None = model_settings.get("story") or None
     error_model: str | None = model_settings.get("error_analysis") or None
+    sc = user.story_config or {}
+    story_temperature: float | None = sc.get("temperature") or None
+    story_length: str = sc.get("story_length") or "medium"
+    new_word_pct: int = int(sc.get("new_word_pct", _DEFAULT_NEW_WORD_PCT))
 
     confident_vocab, fragile_vocab = get_vocab_tiers(req.user_id, db)
     known_surfaces = confident_vocab | fragile_vocab
@@ -250,9 +261,10 @@ async def continue_story(
     due_words = get_due_vocab(req.user_id, db)
 
     system_prompt = build_system_prompt(
-        user, confident_vocab, fragile_vocab, _DEFAULT_NEW_WORD_PCT,
+        user, confident_vocab, fragile_vocab, new_word_pct,
         story_brief=story.brief if story else None,
         due_vocab=due_words or None,
+        story_length=story_length,
     )
 
     difficulty_hint = _difficulty_hint_text(req.difficulty_hint)
@@ -269,8 +281,9 @@ async def continue_story(
         system_prompt=adjusted_system,
         messages=messages,
         known_surfaces=known_surfaces,
-        target_pct=_DEFAULT_NEW_WORD_PCT,
+        target_pct=new_word_pct,
         model_override=story_model,
+        temperature=story_temperature,
     )
     tokens = _annotate_with_vocab_status(tokens, req.user_id, db)
 
@@ -552,6 +565,7 @@ async def _generate_with_retry(
     known_surfaces: set[str],
     target_pct: int,
     model_override: str | None = None,
+    temperature: float | None = None,
 ) -> tuple[str, list[str], list[Token], int, int]:
     """
     Call the LLM, validate vocab budget, and retry up to _MAX_RETRIES times.
@@ -564,7 +578,7 @@ async def _generate_with_retry(
     last_raw: str = ""
 
     for attempt in range(_MAX_RETRIES):
-        raw = await llm_router.route("story", current_system, messages, model_override=model_override)
+        raw = await llm_router.route("story", current_system, messages, model_override=model_override, temperature=temperature)
         last_raw = raw
 
         try:

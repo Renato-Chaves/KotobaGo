@@ -1,5 +1,5 @@
 // Mirrors the backend TokenOut schema
-export type VocabStatus = "known" | "new" | "unseen";
+export type VocabStatus = "known" | "new" | "unseen" | "lesson_example";
 
 export interface Token {
   surface: string;
@@ -81,6 +81,14 @@ export interface SessionSummaryResponse {
 
 export type ErrorAnalysisMode = "on_call" | "auto";
 
+export type StoryLength = "tiny" | "short" | "medium" | "long";
+
+export interface StoryConfig {
+  temperature?: number;      // 0.0–2.0, default 0.7
+  story_length?: StoryLength; // default "medium"
+  new_word_pct?: number;     // 0–50, default 15
+}
+
 // User profile
 export interface UserProfile {
   id: number;
@@ -92,6 +100,7 @@ export interface UserProfile {
   furigana_mode: FuriganaMode;
   dark_mode: boolean;
   model_settings: Record<string, string | null> | null;
+  story_config: StoryConfig | null;
 }
 
 export interface UpdateProfileRequest {
@@ -101,6 +110,7 @@ export interface UpdateProfileRequest {
   error_analysis_mode?: ErrorAnalysisMode;
   furigana_mode?: FuriganaMode;
   model_settings?: Record<string, string | null>;
+  story_config?: StoryConfig;
 }
 
 export interface AvailableModelsResponse {
@@ -134,4 +144,107 @@ export interface VocabGridResponse {
   items: VocabGridItem[];
   total: number;
   stats: VocabGridStats;
+}
+
+// ---------------------------------------------------------------------------
+// Lessons
+// ---------------------------------------------------------------------------
+
+export interface LessonExample {
+  id: string;
+  japanese: string;
+  reading: string;
+  translation: string;
+}
+
+export interface LessonSentence {
+  id: string;
+  japanese: string;
+  reading: string;
+  translation: string;
+}
+
+export interface LessonContent {
+  grammar_point: string;
+  source_language: string;
+  explanation: string;
+  examples: LessonExample[];
+  sentences: LessonSentence[];
+}
+
+export type LessonCategory = "grammar" | "vocabulary" | "conversation";
+
+export interface Lesson {
+  id: number;
+  title: string;
+  jlpt_level: string;
+  grammar_point: string | null;
+  category: LessonCategory;
+  stage: number;
+  order: number;
+  content_json: LessonContent | null;
+}
+
+// Module names matching the backend
+export type LessonModule = "presentation" | "examples" | "recognition" | "conversation" | "qa";
+
+export interface ModuleState {
+  turns: number;
+  seen_ids?: string[];
+  scored_ids?: string[];
+  exported?: boolean;
+}
+
+export interface LessonSessionMeta {
+  active_module: LessonModule;
+  module_history: LessonModule[];
+  qa_return_module: LessonModule | null;
+  modules: Record<LessonModule, ModuleState>;
+}
+
+export interface LessonSession {
+  id: number;
+  lesson_id: number;
+  user_id: number;
+  content_json: Array<{ role: "user" | "assistant"; content: string }>;
+  session_meta: LessonSessionMeta;
+  status: "active" | "completed" | "abandoned";
+  created_at: string;
+}
+
+export interface StartLessonResponse {
+  session_id: number;
+  lesson_id: number;
+  text: string;
+  tokens: Token[];
+  session_meta: LessonSessionMeta;
+  choices: string[];
+}
+
+export interface ContinueLessonResponse {
+  session_id: number;
+  text: string;
+  tokens: Token[];
+  session_meta: LessonSessionMeta;
+  stage_complete: boolean;
+  choices: string[];   // non-empty for conversation module
+}
+
+export interface SwitchModuleResponse {
+  session_id: number;
+  text: string;
+  tokens: Token[];
+  session_meta: LessonSessionMeta;
+  choices: string[];
+}
+
+export interface LessonSummaryResponse {
+  session_id: number;
+  lesson_id: number;
+  stats_json: Record<string, unknown>;
+  coach_note: string;
+}
+
+export interface ExportToStoryResponse {
+  session_id: number;   // new StorySession id
 }

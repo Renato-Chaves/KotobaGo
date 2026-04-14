@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
 
@@ -40,6 +41,7 @@ class User(Base):
     target_list_id = Column(Integer, ForeignKey("lists.id"), nullable=True)
     ai_context = Column(Text, nullable=True)                   # editable AI paragraph
     model_settings = Column(JSON, nullable=True)               # per-task Ollama model overrides
+    story_config = Column(JSON, nullable=True)                 # story prompt tuning: temperature, length, new_word_pct
     error_analysis_mode = Column(
         Enum("on_call", "auto"), nullable=False, default="on_call"
     )
@@ -184,9 +186,45 @@ class Lesson(Base):
     id = Column(Integer, primary_key=True)
     title = Column(String, nullable=False)
     jlpt_level = Column(Enum("N5", "N4", "N3", "N2", "N1"), nullable=False)
-    content_md = Column(Text, nullable=False)
+    content_md = Column(Text, nullable=True)    # kept for backwards compat
     stage = Column(Integer, nullable=False)     # 1, 2, 3 ...
     order = Column(Integer, nullable=False)     # position within the stage
+    grammar_point = Column(String, nullable=True)  # e.g. "N1のN2"
+    category = Column(String, nullable=False, default="grammar")  # grammar | vocabulary | conversation
+    source_language = Column(String, nullable=True)   # language the explanation was written in
+    content_json = Column(JSON, nullable=True)        # structured: {grammar_point, explanation, examples[], sentences[]}
+
+    sessions = relationship("LessonSession", back_populates="lesson")
+
+
+class LessonSession(Base):
+    __tablename__ = "lesson_sessions"
+
+    id = Column(Integer, primary_key=True)
+    lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    content_json = Column(JSON, nullable=False, default=list)   # full message history
+    # session_meta tracks module state — see PLAN.md for full structure
+    session_meta = Column(JSON, nullable=True, default=dict)
+    status = Column(
+        Enum("active", "completed", "abandoned"), nullable=False, default="active"
+    )
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    lesson = relationship("Lesson", back_populates="sessions")
+    summary = relationship("LessonSessionSummary", back_populates="session", uselist=False)
+
+
+class LessonSessionSummary(Base):
+    __tablename__ = "lesson_session_summaries"
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey("lesson_sessions.id"), nullable=False)
+    stats_json = Column(JSON, nullable=False)
+    coach_note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("LessonSession", back_populates="summary")
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +233,22 @@ class Lesson(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Migration: add columns that didn't exist in earlier schema versions
+    with engine.connect() as conn:
+        for stmt in [
+            "ALTER TABLE users ADD COLUMN story_config JSON",
+            # Lesson table extensions (Phase 8 — Lesson Mode)
+            "ALTER TABLE lessons ADD COLUMN grammar_point STRING",
+            "ALTER TABLE lessons ADD COLUMN category STRING NOT NULL DEFAULT 'grammar'",
+            "ALTER TABLE lessons ADD COLUMN source_language STRING",
+            "ALTER TABLE lessons ADD COLUMN content_json JSON",
+            "ALTER TABLE lessons ADD COLUMN content_md TEXT",
+        ]:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                pass  # column already exists
 
 
 def get_db():
