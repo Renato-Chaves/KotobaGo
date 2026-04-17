@@ -65,6 +65,8 @@ def build_system_prompt(lesson: Lesson, user: User, module_state: dict) -> str:
         f"CRITICAL RULE: Only use sentences from the lesson's authored material — "
         f"do NOT invent new sentences. Use ONLY what is provided below.\n\n"
         f"{sentences_block}\n\n"
+        f"ROMAJI HANDLING: The learner may answer in romaji (e.g. 'no' instead of 'の'). "
+        f"Accept romaji answers and evaluate them as if they were written in kana.\n\n"
         f"RULES:\n"
         f"- Present one exercise at a time.\n"
         f"- Be concise — question, then wait for the answer.\n"

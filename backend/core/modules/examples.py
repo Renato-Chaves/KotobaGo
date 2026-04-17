@@ -47,11 +47,18 @@ def build_system_prompt(lesson: Lesson, user: User, module_state: dict) -> str:
         )
         exhausted = True
 
+    level = user.jlpt_goal or "N5"
+
     return (
         f"LANGUAGE: Use {lang_name} for explanations and translations. "
         f"Japanese for the example itself.\n\n"
         f"You are teaching the grammar point: {grammar_point}.\n\n"
         f"{examples_block}\n\n"
+        f"VOCABULARY CONSTRAINT — CRITICAL:\n"
+        f"- The learner is at {level} level. ALL Japanese examples MUST use ONLY {level}-appropriate vocabulary.\n"
+        f"- Use hiragana or very common beginner kanji only.\n"
+        f"- NEVER use advanced kanji or vocab above {level}.\n"
+        f"- When generating new examples, keep them simple and everyday.\n\n"
         f"RULES:\n"
         f"- Present one example at a time.\n"
         f"- Show the Japanese, then the reading in hiragana (in parentheses if different), then the {lang_name} translation.\n"

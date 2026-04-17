@@ -250,7 +250,7 @@ Clicking a card pre-fills the URL field with the source's grammar index. Author 
 
 #### Lesson authoring sources
 
-**Primary: Tofugu** (`tofugu.com/japanese-grammar/`) — more memorable, metaphor-driven explanations, better model to work from when rewriting commercially. **Secondary: Wasabi** (`wasabi-jpn.com/magazine/japanese-grammar/`) — more structural, includes furigana, good fallback for points Tofugu doesn't cover. Both use standard copyright.
+**Primary: Tofugu** (`https://tofugu.com/japanese-grammar/`) — more memorable, metaphor-driven explanations, better model to work from when rewriting commercially. **Secondary: Wasabi** (`https://wasabi-jpn.com/magazine/japanese-grammar/wasabis-online-japanese-grammar-reference/`) — more structural, includes furigana, good fallback for points Tofugu doesn't cover. Both use standard copyright.
 
 #### Content licensing
 

@@ -27,8 +27,9 @@ import { LessonProgressBar, StageNav } from "./StageNav";
 // Types
 // ---------------------------------------------------------------------------
 
-// Modules that output Japanese text worth rendering with TokenSpan
-const JAPANESE_MODULES = new Set<LessonModule>(["examples", "recognition", "conversation"]);
+// Only conversation outputs pure Japanese worth rendering with TokenSpan.
+// Examples/recognition mix Japanese with native-language explanations — render as plain text.
+const JAPANESE_MODULES = new Set<LessonModule>(["conversation"]);
 
 interface AssistantTurn {
   role: "assistant";
@@ -54,15 +55,19 @@ type Turn = AssistantTurn | UserTurn;
 
 function StageClearedBanner({ onDismiss }: { onDismiss: () => void }) {
   useEffect(() => {
-    const t = setTimeout(onDismiss, 2800);
+    const t = setTimeout(onDismiss, 2400);
     return () => clearTimeout(t);
   }, [onDismiss]);
 
   return (
-    <div className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg
-                    bg-emerald-900/40 border border-emerald-700 text-emerald-300 text-sm
-                    animate-pulse">
-      Stage cleared! ✓
+    <div className="flex items-center justify-center gap-2.5 px-5 py-3 rounded-xl
+                    bg-emerald-950/70 border border-emerald-700/60 text-emerald-300
+                    shadow-[0_0_18px_rgba(52,211,153,0.12)] animate-stage-cleared">
+      <span className="flex items-center justify-center w-5 h-5 rounded-full
+                       bg-emerald-600/40 border border-emerald-500/50 text-[11px] font-bold">
+        ✓
+      </span>
+      <span className="text-sm font-medium tracking-wide">Stage cleared!</span>
     </div>
   );
 }
@@ -88,6 +93,9 @@ export function LessonCanvas({ lessonId }: Props) {
   const [summary, setSummary] = useState<LessonSummaryResponse | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  // Ref so auto-advance inside handleSubmit always calls the latest handleSwitchModule
+  const switchModuleRef = useRef<(mod: LessonModule) => Promise<void>>(() => Promise.resolve());
 
   // Load user preferences and start lesson on mount
   useEffect(() => {
@@ -109,7 +117,15 @@ export function LessonCanvas({ lessonId }: Props) {
 
   // --- Start / restart lesson ---
 
+  const handleCancel = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
   const handleStart = useCallback(async () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     setLoading(true);
     setError(null);
     setTurns([]);
@@ -119,49 +135,17 @@ export function LessonCanvas({ lessonId }: Props) {
     setSummary(null);
 
     try {
-      const res: StartLessonResponse = await api.startLesson(lessonId);
+      const res: StartLessonResponse = await api.startLesson(lessonId, ctrl.signal);
       setSessionId(res.session_id);
       setSessionMeta(res.session_meta);
       setTurns([toAssistantTurn(res.text, res.tokens, res.session_meta.active_module, res.choices, false)]);
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
       setError(e instanceof Error ? e.message : "Failed to start lesson");
     } finally {
       setLoading(false);
     }
   }, [lessonId]);
-
-  // --- Submit user input ---
-
-  const handleSubmit = useCallback(async (input: string) => {
-    if (!sessionId) return;
-    setLoading(true);
-    setError(null);
-    setSelectedToken(null);
-
-    const userTurnIndex = turns.length;
-    setTurns((prev) => [...prev, { role: "user", text: input }]);
-
-    try {
-      const res: ContinueLessonResponse = await api.continueLesson(sessionId, { user_input: input });
-      setSessionMeta(res.session_meta);
-
-      const assistantTurn = toAssistantTurn(
-        res.text, res.tokens, res.session_meta.active_module, res.choices, res.stage_complete
-      );
-      setTurns((prev) => [...prev, assistantTurn]);
-
-      if (res.stage_complete) setShowStageBanner(true);
-
-      if (errorMode === "auto") {
-        runErrorAnalysis(userTurnIndex, input);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to continue lesson");
-      setTurns((prev) => prev.slice(0, -1));
-    } finally {
-      setLoading(false);
-    }
-  }, [sessionId, turns.length, errorMode]);
 
   // --- Switch module ---
 
@@ -183,6 +167,60 @@ export function LessonCanvas({ lessonId }: Props) {
       setLoading(false);
     }
   }, [sessionId, loading]);
+
+  // Keep the ref in sync so handleSubmit can call the latest handleSwitchModule
+  // without needing it in its own dependency array.
+  useEffect(() => {
+    switchModuleRef.current = handleSwitchModule;
+  }, [handleSwitchModule]);
+
+  // --- Submit user input ---
+
+  const handleSubmit = useCallback(async (input: string) => {
+    if (!sessionId) return;
+
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    setLoading(true);
+    setError(null);
+    setSelectedToken(null);
+
+    const userTurnIndex = turns.length;
+    setTurns((prev) => [...prev, { role: "user", text: input }]);
+
+    try {
+      const res: ContinueLessonResponse = await api.continueLesson(sessionId, { user_input: input }, ctrl.signal);
+      setSessionMeta(res.session_meta);
+
+      const assistantTurn = toAssistantTurn(
+        res.text, res.tokens, res.session_meta.active_module, res.choices, res.stage_complete
+      );
+      setTurns((prev) => [...prev, assistantTurn]);
+
+      if (res.stage_complete) {
+        setShowStageBanner(true);
+        const next = getNextModule(res.session_meta.active_module);
+        if (next) {
+          setTimeout(() => { switchModuleRef.current(next); }, 1800);
+        }
+      }
+
+      if (errorMode === "auto") {
+        runErrorAnalysis(userTurnIndex, input);
+      }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setTurns((prev) => prev.slice(0, -1));
+        return;
+      }
+      setError(e instanceof Error ? e.message : "Failed to continue lesson");
+      setTurns((prev) => prev.slice(0, -1));
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId, turns.length, errorMode]);
 
   // --- Error analysis ---
 
@@ -307,12 +345,18 @@ export function LessonCanvas({ lessonId }: Props) {
 
   if (turns.length === 0 && loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-screen items-center justify-center flex-col gap-4">
         <div className="flex gap-1.5">
           <span className="w-2 h-2 rounded-full bg-zinc-500 animate-bounce [animation-delay:0ms]" />
           <span className="w-2 h-2 rounded-full bg-zinc-500 animate-bounce [animation-delay:150ms]" />
           <span className="w-2 h-2 rounded-full bg-zinc-500 animate-bounce [animation-delay:300ms]" />
         </div>
+        <button
+          onClick={handleCancel}
+          className="text-sm text-zinc-600 hover:text-zinc-400 transition-colors"
+        >
+          Cancel
+        </button>
       </div>
     );
   }
@@ -325,7 +369,7 @@ export function LessonCanvas({ lessonId }: Props) {
     <div className="flex min-h-screen">
 
       {/* --- Left sidebar — stage nav --- */}
-      <div className="hidden md:flex flex-col gap-4 pt-6 pl-4 pr-2 w-52 flex-shrink-0">
+      <div className="hidden md:flex flex-col gap-4 pt-6 pl-4 pr-2 w-52 shrink-0">
         {sessionMeta && (
           <StageNav
             meta={sessionMeta}
@@ -475,10 +519,18 @@ export function LessonCanvas({ lessonId }: Props) {
 
           {/* Loading */}
           {loading && (
-            <div className="flex gap-1.5 items-center px-2 py-3">
-              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:0ms]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:150ms]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:300ms]" />
+            <div className="flex gap-3 items-center px-2 py-3">
+              <div className="flex gap-1.5 items-center">
+                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:0ms]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:150ms]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:300ms]" />
+              </div>
+              <button
+                onClick={handleCancel}
+                className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+              >
+                Cancel
+              </button>
             </div>
           )}
 
@@ -489,7 +541,7 @@ export function LessonCanvas({ lessonId }: Props) {
         {/* Input area */}
         {!loading && turns.length > 0 && (
           <div className="mt-4 pt-4 border-t border-zinc-800">
-            {/* Mobile stage nav */}
+            {/* Mobile stage nav + export button */}
             {sessionMeta && (
               <div className="flex md:hidden gap-2 mb-3 overflow-x-auto pb-1">
                 {(["presentation", "examples", "recognition", "conversation"] as LessonModule[]).map((mod) => {
@@ -499,7 +551,7 @@ export function LessonCanvas({ lessonId }: Props) {
                       key={mod}
                       onClick={() => handleSwitchModule(mod)}
                       disabled={loading}
-                      className={`flex-shrink-0 px-2 py-1 rounded-lg text-xs border transition-colors
+                      className={`shrink-0 px-2 py-1 rounded-lg text-xs border transition-colors
                         ${isActive
                           ? "bg-sky-900/50 border-sky-700 text-sky-300"
                           : "border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300"
@@ -509,6 +561,17 @@ export function LessonCanvas({ lessonId }: Props) {
                     </button>
                   );
                 })}
+                {inConversation && (
+                  <button
+                    onClick={handleExportToStory}
+                    disabled={loading}
+                    className="shrink-0 px-2 py-1 rounded-lg text-xs border border-sky-700/60
+                               text-sky-400 hover:border-sky-500 hover:text-sky-300 transition-colors
+                               disabled:opacity-40"
+                  >
+                    → Story
+                  </button>
+                )}
               </div>
             )}
             <StoryInput
@@ -567,4 +630,12 @@ function moduleLabel(module: LessonModule): string {
     qa:           "❓ Q&A",
   };
   return labels[module] ?? module;
+}
+
+const MODULE_ORDER: LessonModule[] = ["presentation", "examples", "recognition", "conversation"];
+
+function getNextModule(current: LessonModule): LessonModule | null {
+  const idx = MODULE_ORDER.indexOf(current);
+  if (idx < 0 || idx >= MODULE_ORDER.length - 1) return null;
+  return MODULE_ORDER[idx + 1];
 }

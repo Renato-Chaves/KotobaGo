@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useEffect, useState } from "react";
+import Link from "next/link";
 
 import { api } from "@/lib/api";
 import type {
@@ -63,6 +64,7 @@ export function StoryCanvas() {
   const [summary, setSummary] = useState<SessionSummaryResponse | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Load saved user preferences on first mount
   useEffect(() => {
@@ -83,7 +85,15 @@ export function StoryCanvas() {
 
   // --- Start a new story ---
 
+  const handleCancel = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
   const handleStart = useCallback(async () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     setLoading(true);
     setError(null);
     setTurns([]);
@@ -92,10 +102,11 @@ export function StoryCanvas() {
     setSummary(null);
 
     try {
-      const res: StoryResponse = await api.startStory({ theme: "日常生活" });
+      const res: StoryResponse = await api.startStory({ theme: "日常生活" }, ctrl.signal);
       setSessionId(res.session_id);
       setTurns([toStoryTurn(res)]);
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
       setError(e instanceof Error ? e.message : "Failed to start story");
     } finally {
       setLoading(false);
@@ -147,6 +158,11 @@ export function StoryCanvas() {
 
   const handleSubmit = useCallback(async (input: string) => {
     if (!sessionId) return;
+
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     setLoading(true);
     setError(null);
     setSelectedToken(null);
@@ -159,7 +175,7 @@ export function StoryCanvas() {
       const res: StoryResponse = await api.continueStory(sessionId, {
         user_input: input,
         difficulty_hint: pendingHint ?? undefined,
-      });
+      }, ctrl.signal);
       setPendingHint(null);
 
       // If the backend converted romaji → Japanese, update the user turn to show it
@@ -178,6 +194,10 @@ export function StoryCanvas() {
         runErrorAnalysis(userTurnIndex, input);
       }
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setTurns((prev) => prev.slice(0, -1));
+        return;
+      }
       setError(e instanceof Error ? e.message : "Failed to continue story");
       // Remove the optimistic user turn on failure
       setTurns((prev) => prev.slice(0, -1));
@@ -248,19 +268,39 @@ export function StoryCanvas() {
   if (turns.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen gap-6">
+        <Link
+          href="/"
+          className="absolute top-6 left-6 text-sm text-zinc-500 hover:text-zinc-300 transition-colors"
+        >
+          ← Home
+        </Link>
         <h1 className="text-3xl font-bold tracking-tight">ことばGo</h1>
         <p className="text-zinc-400 text-sm">
           AI-generated stories calibrated to your vocabulary level
         </p>
-        <button
-          onClick={handleStart}
-          disabled={loading}
-          className="px-6 py-3 rounded-xl bg-sky-600 hover:bg-sky-500
-                    text-white font-medium transition-colors
-                    disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {loading ? "Generating…" : "Start Story"}
-        </button>
+        {loading ? (
+          <div className="flex items-center gap-3">
+            <div className="flex gap-1.5 items-center px-6 py-3">
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:0ms]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:150ms]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:300ms]" />
+            </div>
+            <button
+              onClick={handleCancel}
+              className="text-sm text-zinc-500 hover:text-zinc-300 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={handleStart}
+            className="px-6 py-3 rounded-xl bg-sky-600 hover:bg-sky-500
+                      text-white font-medium transition-colors"
+          >
+            Start Story
+          </button>
+        )}
         {error && <p className="text-red-400 text-sm">{error}</p>}
       </div>
     );
@@ -278,11 +318,17 @@ export function StoryCanvas() {
         {/* Top bar — sticky */}
         <div className="flex items-center justify-between mb-6 pb-4 border-b border-zinc-800">
           <div className="flex items-center gap-3">
+            <Link
+              href="/"
+              className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+            >
+              ← Home
+            </Link>
             <button
               onClick={handleStart}
               className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
             >
-              ← New Story
+              New Story
             </button>
             <a
               href="/vocab"
@@ -410,10 +456,18 @@ export function StoryCanvas() {
 
           {/* Loading indicator */}
           {loading && (
-            <div className="flex gap-1.5 items-center px-2 py-3">
-              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:0ms]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:150ms]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:300ms]" />
+            <div className="flex gap-3 items-center px-2 py-3">
+              <div className="flex gap-1.5 items-center">
+                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:0ms]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:150ms]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 animate-bounce [animation-delay:300ms]" />
+              </div>
+              <button
+                onClick={handleCancel}
+                className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+              >
+                Cancel
+              </button>
             </div>
           )}
 

@@ -1,11 +1,11 @@
-import type { AvailableModelsResponse, ContinueLessonResponse, ConfidenceRating, ErrorAnalysisResponse, ExportToStoryResponse, Lesson, LessonModule, LessonSummaryResponse, SessionSummaryResponse, StartLessonResponse, StoryResponse, SwitchModuleResponse, Token, UpdateProfileRequest, UserProfile, VocabGridResponse, WordLookup } from "./types";
+import type { AvailableModelsResponse, ContinueLessonResponse, ConfidenceRating, CreateLessonRequest, CreateLessonResponse, ErrorAnalysisResponse, ExportToStoryResponse, ImportPreview, ImportUrlRequest, Lesson, LessonModule, LessonSummaryResponse, SessionSummaryResponse, StartLessonResponse, StoryResponse, SwitchModuleResponse, Token, UpdateProfileRequest, UserProfile, VocabGridResponse, WordLookup } from "./types";
 
 // In Client Components this env var is available (NEXT_PUBLIC_ prefix).
 // Server Components use API_URL_INTERNAL instead.
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`);
+async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(`${BASE_URL}${path}`, { signal });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`API error ${res.status}: ${text}`);
@@ -26,11 +26,12 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) {
     const text = await res.text();
@@ -39,20 +40,58 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+/**
+ * Like post(), but reads an NDJSON stream from the backend.
+ * The backend sends `~\n` heartbeats while the LLM is working, then the
+ * JSON result as the final line. This keeps the TCP connection alive for
+ * slow local model generations that would otherwise trigger a NetworkError.
+ */
+async function postStreamed<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`API error ${res.status}: ${text}`);
+  }
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t || t === "~") continue; // heartbeat
+      const msg = JSON.parse(t) as Record<string, unknown>;
+      if (msg.__error__) throw new Error(msg.__error__ as string);
+      return msg as T;
+    }
+  }
+  throw new Error("Stream ended without a result");
+}
+
 export const api = {
   startStory: (params: {
     user_id?: number;
     theme?: string;
     grammar_focus?: string;
     new_word_pct?: number;
-  }): Promise<StoryResponse> =>
-    post("/story/start", { user_id: 1, ...params }),
+  }, signal?: AbortSignal): Promise<StoryResponse> =>
+    postStreamed("/story/start", { user_id: 1, ...params }, signal),
 
   continueStory: (
     session_id: number,
-    params: { user_input: string; difficulty_hint?: string }
+    params: { user_input: string; difficulty_hint?: string },
+    signal?: AbortSignal,
   ): Promise<StoryResponse> =>
-    post(`/story/continue/${session_id}`, { user_id: 1, ...params }),
+    postStreamed(`/story/continue/${session_id}`, { user_id: 1, ...params }, signal),
 
   lookupWord: (vocab_id: number): Promise<WordLookup> =>
     get(`/vocab/lookup/${vocab_id}?user_id=1`),
@@ -91,16 +130,17 @@ export const api = {
   // -------------------------------------------------------------------------
 
   listLessons: (): Promise<Lesson[]> =>
-    get("/lessons"),
+    get("/lessons?user_id=1"),
 
-  startLesson: (lesson_id: number): Promise<StartLessonResponse> =>
-    post(`/lessons/${lesson_id}/start`, { user_id: 1 }),
+  startLesson: (lesson_id: number, signal?: AbortSignal): Promise<StartLessonResponse> =>
+    postStreamed(`/lessons/${lesson_id}/start`, { user_id: 1 }, signal),
 
   continueLesson: (
     session_id: number,
-    params: { user_input: string }
+    params: { user_input: string },
+    signal?: AbortSignal,
   ): Promise<ContinueLessonResponse> =>
-    post(`/lessons/session/${session_id}/continue`, { user_id: 1, ...params }),
+    postStreamed(`/lessons/session/${session_id}/continue`, { user_id: 1, ...params }, signal),
 
   switchModule: (
     session_id: number,
@@ -119,4 +159,10 @@ export const api = {
 
   exportLessonToStory: (session_id: number): Promise<ExportToStoryResponse> =>
     post(`/lessons/session/${session_id}/export-to-story`, { user_id: 1 }),
+
+  importLessonUrl: (req: ImportUrlRequest): Promise<ImportPreview> =>
+    post("/lessons/import-url", req),
+
+  createLesson: (req: CreateLessonRequest): Promise<CreateLessonResponse> =>
+    post("/lessons", req),
 };

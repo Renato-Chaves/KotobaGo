@@ -6,6 +6,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from core.error_analyzer import analyze_errors as _run_error_analysis
 from core.llm import router as llm_router
 from core.romaji import convert_to_japanese, is_romaji_heavy
+from core.streaming import stream_json
 from core.story_builder import (
     build_continuation_prompt,
     build_system_prompt,
@@ -124,101 +125,106 @@ class SummaryResponse(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/start", response_model=StoryResponse)
+@router.post("/start")
 async def start_story(req: StartStoryRequest, db: Session = Depends(get_db)):
     """
     Start a new story session. Generates the opening segment calibrated
     to the user's vocabulary level and creates DB records.
+    Streams heartbeat newlines while the LLM is working to keep the
+    TCP connection alive for slow local models.
     """
-    user = get_user_or_404(req.user_id, db)
-    model_settings = user.model_settings or {}
-    story_model: str | None = model_settings.get("story") or None
-    sc = user.story_config or {}
-    story_temperature: float | None = sc.get("temperature") or None
-    story_length: str = sc.get("story_length") or "medium"
-    # new_word_pct: request value wins; fall back to user's saved default
-    new_word_pct = req.new_word_pct if req.new_word_pct != _DEFAULT_NEW_WORD_PCT else int(sc.get("new_word_pct", req.new_word_pct))
+    async def work() -> dict:
+        user = get_user_or_404(req.user_id, db)
+        model_settings = user.model_settings or {}
+        story_model: str | None = model_settings.get("story") or None
+        sc = user.story_config or {}
+        story_temperature: float | None = sc.get("temperature") or None
+        story_length: str = sc.get("story_length") or "medium"
+        # new_word_pct: request value wins; fall back to user's saved default
+        new_word_pct = req.new_word_pct if req.new_word_pct != _DEFAULT_NEW_WORD_PCT else int(sc.get("new_word_pct", req.new_word_pct))
 
-    confident_vocab, fragile_vocab = get_vocab_tiers(req.user_id, db)
-    known_surfaces = confident_vocab | fragile_vocab  # union for budget validation
+        confident_vocab, fragile_vocab = get_vocab_tiers(req.user_id, db)
+        known_surfaces = confident_vocab | fragile_vocab  # union for budget validation
 
-    # Generate narrative anchor — keeps LLM coherent across all turns
-    brief = await generate_story_brief(req.theme, user, model_override=story_model)
+        # Generate narrative anchor — keeps LLM coherent across all turns
+        brief = await generate_story_brief(req.theme, user, model_override=story_model)
 
-    # Build the opening user message — sets scene and theme
-    opening = _build_opening_message(req.theme, req.grammar_focus)
-    messages = [{"role": "user", "content": opening}]
+        # Build the opening user message — sets scene and theme
+        opening = _build_opening_message(req.theme, req.grammar_focus)
+        messages = [{"role": "user", "content": opening}]
 
-    system_prompt = build_system_prompt(
-        user, confident_vocab, fragile_vocab, new_word_pct,
-        story_brief=brief, story_length=story_length,
-    )
+        system_prompt = build_system_prompt(
+            user, confident_vocab, fragile_vocab, new_word_pct,
+            story_brief=brief, story_length=story_length,
+        )
 
-    story_text, choices, tokens, new_count, total = await _generate_with_retry(
-        system_prompt=system_prompt,
-        messages=messages,
-        known_surfaces=known_surfaces,
-        target_pct=new_word_pct,
-        model_override=story_model,
-        temperature=story_temperature,
-    )
-    tokens = _annotate_with_vocab_status(tokens, req.user_id, db)
+        story_text, choices, tokens, new_count, total = await _generate_with_retry(
+            system_prompt=system_prompt,
+            messages=messages,
+            known_surfaces=known_surfaces,
+            target_pct=new_word_pct,
+            model_override=story_model,
+            temperature=story_temperature,
+        )
+        tokens = _annotate_with_vocab_status(tokens, req.user_id, db)
 
-    # Persist story + session
-    story = Story(
-        theme=req.theme,
-        grammar_focus=req.grammar_focus,
-        brief=brief,
-        status="active",
-    )
-    db.add(story)
-    db.flush()  # get story.id without full commit
+        # Persist story + session
+        story = Story(
+            theme=req.theme,
+            grammar_focus=req.grammar_focus,
+            brief=brief,
+            status="active",
+        )
+        db.add(story)
+        db.flush()  # get story.id without full commit
 
-    # Store only the story_text as the assistant turn — not the raw JSON.
-    # If the model sees its own JSON in history it tries to continue the JSON
-    # format rather than the narrative, producing garbled output.
-    history = [
-        {"role": "user", "content": opening},
-        {"role": "assistant", "content": story_text},
-    ]
-    context_tokens = _estimate_tokens(system_prompt, history)
+        # Store only the story_text as the assistant turn — not the raw JSON.
+        # If the model sees its own JSON in history it tries to continue the JSON
+        # format rather than the narrative, producing garbled output.
+        history = [
+            {"role": "user", "content": opening},
+            {"role": "assistant", "content": story_text},
+        ]
+        context_tokens = _estimate_tokens(system_prompt, history)
 
-    # Collect known vocab_ids seen in this turn
-    known_ids = [t.vocab_id for t in tokens if t.is_content and t.status == "known" and t.vocab_id]
+        # Collect known vocab_ids seen in this turn
+        known_ids = [t.vocab_id for t in tokens if t.is_content and t.status == "known" and t.vocab_id]
 
-    session = StorySession(
-        story_id=story.id,
-        content_json=history,
-        context_tokens_used=context_tokens,
-        session_meta={
-            "new_words_total": new_count,
-            "content_words_total": total,
-            "turn_count": 0,  # user turns only
-            "errors": [],
-            "session_words": {"new_tokens": [], "known": list(set(known_ids))},
-        },
-    )
-    db.add(session)
-    db.flush()  # get session.id so _introduce_new_words can reference it
+        session = StorySession(
+            story_id=story.id,
+            content_json=history,
+            context_tokens_used=context_tokens,
+            session_meta={
+                "new_words_total": new_count,
+                "content_words_total": total,
+                "turn_count": 0,  # user turns only
+                "errors": [],
+                "session_words": {"new_tokens": [], "known": list(set(known_ids))},
+            },
+        )
+        db.add(session)
+        db.flush()  # get session.id so _introduce_new_words can reference it
 
-    # Mark new words as "introduced" in user_vocab; track their ids in session_words
-    await _introduce_new_words(req.user_id, tokens, known_surfaces, db, session=session)
+        # Mark new words as "introduced" in user_vocab; track their ids in session_words
+        await _introduce_new_words(req.user_id, tokens, known_surfaces, db, session=session)
 
-    db.commit()
-    db.refresh(session)
+        db.commit()
+        db.refresh(session)
 
-    return StoryResponse(
-        session_id=session.id,
-        story_id=story.id,
-        tokens=_tokens_to_out(tokens),
-        choices=choices,
-        context_usage_pct=round(context_tokens / _CONTEXT_LIMIT_TOKENS * 100, 1),
-        new_word_count=new_count,
-        total_content_words=total,
-    )
+        return StoryResponse(
+            session_id=session.id,
+            story_id=story.id,
+            tokens=_tokens_to_out(tokens),
+            choices=choices,
+            context_usage_pct=round(context_tokens / _CONTEXT_LIMIT_TOKENS * 100, 1),
+            new_word_count=new_count,
+            total_content_words=total,
+        ).model_dump()
+
+    return await stream_json(work())
 
 
-@router.post("/continue/{session_id}", response_model=StoryResponse)
+@router.post("/continue/{session_id}")
 async def continue_story(
     session_id: int,
     req: ContinueStoryRequest,
@@ -227,111 +233,117 @@ async def continue_story(
     """
     Continue a story session with user input. Appends to message history
     and generates the next segment.
+    Streams heartbeat newlines while the LLM is working to keep the
+    TCP connection alive for slow local models.
     """
     session = db.query(StorySession).filter(StorySession.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    get_user_or_404(req.user_id, db)  # validate user exists before streaming starts
 
-    user = get_user_or_404(req.user_id, db)
-    model_settings = user.model_settings or {}
-    story_model: str | None = model_settings.get("story") or None
-    error_model: str | None = model_settings.get("error_analysis") or None
-    sc = user.story_config or {}
-    story_temperature: float | None = sc.get("temperature") or None
-    story_length: str = sc.get("story_length") or "medium"
-    new_word_pct: int = int(sc.get("new_word_pct", _DEFAULT_NEW_WORD_PCT))
+    async def work() -> dict:
+        user = get_user_or_404(req.user_id, db)
+        model_settings = user.model_settings or {}
+        story_model: str | None = model_settings.get("story") or None
+        error_model: str | None = model_settings.get("error_analysis") or None
+        sc = user.story_config or {}
+        story_temperature: float | None = sc.get("temperature") or None
+        story_length: str = sc.get("story_length") or "medium"
+        new_word_pct: int = int(sc.get("new_word_pct", _DEFAULT_NEW_WORD_PCT))
 
-    confident_vocab, fragile_vocab = get_vocab_tiers(req.user_id, db)
-    known_surfaces = confident_vocab | fragile_vocab
+        confident_vocab, fragile_vocab = get_vocab_tiers(req.user_id, db)
+        known_surfaces = confident_vocab | fragile_vocab
 
-    # Convert romaji to Japanese if needed — the LLM and tokenizer need proper Japanese
-    user_input = req.user_input
-    converted_input: str | None = None
-    if is_romaji_heavy(user_input):
-        japanese = await convert_to_japanese(user_input, model_override=error_model)
-        if japanese != user_input:
-            converted_input = japanese
-            user_input = japanese
+        # Convert romaji to Japanese if needed — the LLM and tokenizer need proper Japanese
+        user_input = req.user_input
+        converted_input: str | None = None
+        if is_romaji_heavy(user_input):
+            japanese = await convert_to_japanese(user_input, model_override=error_model)
+            if japanese != user_input:
+                converted_input = japanese
+                user_input = japanese
 
-    story = db.query(Story).filter(Story.id == session.story_id).first()
-    meta = dict(session.session_meta or {})
-    existing_summary: str | None = meta.get("story_summary")
+        story = db.query(Story).filter(Story.id == session.story_id).first()
+        meta = dict(session.session_meta or {})
+        existing_summary: str | None = meta.get("story_summary")
 
-    # SM-2: get words due for review to reinforce in this turn
-    due_words = get_due_vocab(req.user_id, db)
+        # SM-2: get words due for review to reinforce in this turn
+        due_words = get_due_vocab(req.user_id, db)
 
-    system_prompt = build_system_prompt(
-        user, confident_vocab, fragile_vocab, new_word_pct,
-        story_brief=story.brief if story else None,
-        due_vocab=due_words or None,
-        story_length=story_length,
-    )
+        system_prompt = build_system_prompt(
+            user, confident_vocab, fragile_vocab, new_word_pct,
+            story_brief=story.brief if story else None,
+            due_vocab=due_words or None,
+            story_length=story_length,
+        )
 
-    difficulty_hint = _difficulty_hint_text(req.difficulty_hint)
-    adjusted_system, messages, new_summary = await build_continuation_prompt(
-        system_prompt=system_prompt,
-        history=session.content_json,
-        user_input=user_input,
-        difficulty_hint=difficulty_hint,
-        existing_summary=existing_summary,
-        model_override=story_model,
-    )
+        difficulty_hint = _difficulty_hint_text(req.difficulty_hint)
+        adjusted_system, messages, new_summary = await build_continuation_prompt(
+            system_prompt=system_prompt,
+            history=session.content_json,
+            user_input=user_input,
+            difficulty_hint=difficulty_hint,
+            existing_summary=existing_summary,
+            model_override=story_model,
+        )
 
-    story_text, choices, tokens, new_count, total = await _generate_with_retry(
-        system_prompt=adjusted_system,
-        messages=messages,
-        known_surfaces=known_surfaces,
-        target_pct=new_word_pct,
-        model_override=story_model,
-        temperature=story_temperature,
-    )
-    tokens = _annotate_with_vocab_status(tokens, req.user_id, db)
+        story_text, choices, tokens, new_count, total = await _generate_with_retry(
+            system_prompt=adjusted_system,
+            messages=messages,
+            known_surfaces=known_surfaces,
+            target_pct=new_word_pct,
+            model_override=story_model,
+            temperature=story_temperature,
+        )
+        tokens = _annotate_with_vocab_status(tokens, req.user_id, db)
 
-    # Update session history (store the Japanese version so history stays coherent)
-    updated_history = [
-        *session.content_json,
-        {"role": "user", "content": user_input},
-        {"role": "assistant", "content": story_text},
-    ]
-    context_tokens = _estimate_tokens(adjusted_system, updated_history)
+        # Update session history (store the Japanese version so history stays coherent)
+        updated_history = [
+            *session.content_json,
+            {"role": "user", "content": user_input},
+            {"role": "assistant", "content": story_text},
+        ]
+        context_tokens = _estimate_tokens(adjusted_system, updated_history)
 
-    session.content_json = updated_history
-    session.context_tokens_used = context_tokens
+        session.content_json = updated_history
+        session.context_tokens_used = context_tokens
 
-    # Accumulate running stats for session summary
-    meta["new_words_total"] = meta.get("new_words_total", 0) + new_count
-    meta["content_words_total"] = meta.get("content_words_total", 0) + total
-    meta["turn_count"] = meta.get("turn_count", 0) + 1
-    if "errors" not in meta:
-        meta["errors"] = []
+        # Accumulate running stats for session summary
+        meta["new_words_total"] = meta.get("new_words_total", 0) + new_count
+        meta["content_words_total"] = meta.get("content_words_total", 0) + total
+        meta["turn_count"] = meta.get("turn_count", 0) + 1
+        if "errors" not in meta:
+            meta["errors"] = []
 
-    # Persist narrative compression if new turns were compressed this turn
-    if new_summary:
-        meta["story_summary"] = new_summary
+        # Persist narrative compression if new turns were compressed this turn
+        if new_summary:
+            meta["story_summary"] = new_summary
 
-    # Accumulate known vocab_ids seen this turn
-    known_ids_this_turn = [t.vocab_id for t in tokens if t.is_content and t.status == "known" and t.vocab_id]
-    session_words = meta.setdefault("session_words", {"new_tokens": [], "known": []})
-    session_words["known"] = list(set(session_words.get("known", [])) | set(known_ids_this_turn))
-    meta["session_words"] = session_words
+        # Accumulate known vocab_ids seen this turn
+        known_ids_this_turn = [t.vocab_id for t in tokens if t.is_content and t.status == "known" and t.vocab_id]
+        session_words = meta.setdefault("session_words", {"new_tokens": [], "known": []})
+        session_words["known"] = list(set(session_words.get("known", [])) | set(known_ids_this_turn))
+        meta["session_words"] = session_words
 
-    session.session_meta = meta
-    flag_modified(session, "session_meta")
+        session.session_meta = meta
+        flag_modified(session, "session_meta")
 
-    await _introduce_new_words(req.user_id, tokens, known_surfaces, db, session=session)
+        await _introduce_new_words(req.user_id, tokens, known_surfaces, db, session=session)
 
-    db.commit()
+        db.commit()
 
-    return StoryResponse(
-        session_id=session.id,
-        story_id=session.story_id,
-        tokens=_tokens_to_out(tokens),
-        choices=choices,
-        context_usage_pct=round(context_tokens / _CONTEXT_LIMIT_TOKENS * 100, 1),
-        new_word_count=new_count,
-        total_content_words=total,
-        converted_input=converted_input,
-    )
+        return StoryResponse(
+            session_id=session.id,
+            story_id=session.story_id,
+            tokens=_tokens_to_out(tokens),
+            choices=choices,
+            context_usage_pct=round(context_tokens / _CONTEXT_LIMIT_TOKENS * 100, 1),
+            new_word_count=new_count,
+            total_content_words=total,
+            converted_input=converted_input,
+        ).model_dump()
+
+    return await stream_json(work())
 
 
 @router.get("/session/{session_id}")

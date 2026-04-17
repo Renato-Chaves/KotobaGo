@@ -20,7 +20,10 @@ const underlineClass: Record<string, string> = {
 
 export function TokenSpan({ token, furiganaMode, onSelect }: Props) {
   const showFurigana = shouldShowFurigana(token, furiganaMode);
-  const ulClass = token.is_content ? (underlineClass[token.status] ?? "") : "";
+  // lesson_example overrides is_content so grammar targets (e.g. の particle) always get highlighted
+  const ulClass = (token.is_content || token.status === "lesson_example")
+    ? (underlineClass[token.status] ?? "")
+    : "";
 
   // Punctuation and newlines — render without interaction
   if (!token.is_content && isPunctuation(token.surface)) {

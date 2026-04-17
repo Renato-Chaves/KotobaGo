@@ -30,6 +30,8 @@ def build_system_prompt(lesson: Lesson, user: User, module_state: dict) -> str:
         ]
         examples_block = "\nInclude these example phrases naturally in your explanation:\n" + "\n".join(lines)
 
+    level = user.jlpt_goal or "N5"
+
     return (
         f"LANGUAGE: Explain entirely in {lang_name}. Japanese phrases and sentences are fine as examples, "
         f"but all explanations and commentary must be in {lang_name}.\n\n"
@@ -37,6 +39,12 @@ def build_system_prompt(lesson: Lesson, user: User, module_state: dict) -> str:
         f"You are currently teaching the grammar point: {grammar_point}.\n\n"
         f"Author notes (use as context — do NOT copy verbatim): {explanation_notes}\n"
         f"{examples_block}\n\n"
+        f"VOCABULARY CONSTRAINT — CRITICAL:\n"
+        f"- The learner is at {level} level. ALL Japanese examples MUST use ONLY {level}-appropriate vocabulary.\n"
+        f"- Use hiragana or very common beginner kanji only (e.g. 食べ物, 本, 学校, 友達, 名前).\n"
+        f"- NEVER use advanced kanji or vocab above {level} (no 主人公, 背景, 制作, 視聴者, 複雑, etc.).\n"
+        f"- When in doubt, use hiragana. Prefer simple, everyday words.\n"
+        f"- Include romaji in parentheses after each Japanese phrase.\n\n"
         f"RULES:\n"
         f"- Explain the grammar in a warm, memorable way — use analogies if helpful.\n"
         f"- Show Japanese examples with readings and translations.\n"

@@ -174,6 +174,8 @@ export interface LessonContent {
 
 export type LessonCategory = "grammar" | "vocabulary" | "conversation";
 
+export type LessonProgressStatus = "completed" | "active" | "available" | "locked";
+
 export interface Lesson {
   id: number;
   title: string;
@@ -183,6 +185,8 @@ export interface Lesson {
   stage: number;
   order: number;
   content_json: LessonContent | null;
+  progress_status: LessonProgressStatus;
+  active_session_id: number | null;
 }
 
 // Module names matching the backend
@@ -247,4 +251,40 @@ export interface LessonSummaryResponse {
 
 export interface ExportToStoryResponse {
   session_id: number;   // new StorySession id
+}
+
+// ---------------------------------------------------------------------------
+// Lesson creation / import
+// ---------------------------------------------------------------------------
+
+export interface ImportUrlRequest {
+  url?: string;
+  text?: string;
+}
+
+export interface ImportPreview {
+  title: string;
+  grammar_point: string;
+  jlpt_level: string;
+  category: string;
+  source_language: string;
+  explanation: string;
+  examples: LessonExample[];
+  sentences: LessonSentence[];
+}
+
+export interface CreateLessonRequest {
+  title: string;
+  grammar_point?: string;
+  jlpt_level: string;
+  category: string;
+  source_language: string;
+  explanation: string;
+  examples: LessonExample[];
+  sentences: LessonSentence[];
+}
+
+export interface CreateLessonResponse {
+  id: number;
+  title: string;
 }
