@@ -14,14 +14,16 @@ Session flow:
 import json
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from core.error_analyzer import analyze_errors as _run_error_analysis
 from core.llm import router as llm_router
+from core.streaming import stream_json
 from core.modules import conversation, examples, presentation, qa, recognition
+from core.romaji import convert_to_japanese, is_romaji_heavy
 from core.story_builder import get_user_or_404
 from core.tokenizer import tokenize
 from db.models import (
@@ -78,6 +80,8 @@ class LessonOut(BaseModel):
     stage: int
     order: int
     content_json: dict | None
+    progress_status: str = "available"       # completed | active | available | locked
+    active_session_id: int | None = None
 
 
 class SessionMetaOut(BaseModel):
@@ -170,11 +174,54 @@ class ExportResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("", response_model=list[LessonOut])
-async def list_lessons(db: Session = Depends(get_db)):
-    """List all lessons ordered by stage and position within stage."""
+async def list_lessons(
+    user_id: int = Query(default=1),
+    db: Session = Depends(get_db),
+):
+    """List all lessons ordered by stage and position within stage, with per-user progress."""
     lessons = db.query(Lesson).order_by(Lesson.stage, Lesson.order).all()
-    return [
-        LessonOut(
+
+    # Fetch all sessions for this user to compute per-lesson progress
+    sessions = (
+        db.query(LessonSession)
+        .filter(LessonSession.user_id == user_id)
+        .all()
+    )
+    # Group sessions by lesson_id
+    sessions_by_lesson: dict[int, list[LessonSession]] = {}
+    for s in sessions:
+        sessions_by_lesson.setdefault(s.lesson_id, []).append(s)
+
+    # Track which lessons have been completed to determine locked/available
+    completed_ids: set[int] = set()
+    for lid, sess_list in sessions_by_lesson.items():
+        if any(s.status == "completed" for s in sess_list):
+            completed_ids.add(lid)
+
+    result: list[LessonOut] = []
+    prev_available = True  # first lesson is always available
+
+    for l in lessons:
+        sess_list = sessions_by_lesson.get(l.id, [])
+        has_completed = any(s.status == "completed" for s in sess_list)
+        active_sessions = [s for s in sess_list if s.status == "active"]
+
+        if has_completed:
+            status = "completed"
+        elif active_sessions:
+            status = "active"
+        elif prev_available:
+            status = "available"
+        else:
+            status = "locked"
+
+        # Most recent active session id (for "Continue" button)
+        active_sid = max((s.id for s in active_sessions), default=None) if active_sessions else None
+
+        # A lesson is "available" for the next one if it's completed or available
+        prev_available = status in ("completed", "available", "active")
+
+        result.append(LessonOut(
             id=l.id,
             title=l.title,
             jlpt_level=l.jlpt_level,
@@ -183,16 +230,198 @@ async def list_lessons(db: Session = Depends(get_db)):
             stage=l.stage,
             order=l.order,
             content_json=l.content_json,
+            progress_status=status,
+            active_session_id=active_sid,
+        ))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# POST /lessons/import-url — extract lesson structure from a URL or pasted text
+# ---------------------------------------------------------------------------
+
+class ImportRequest(BaseModel):
+    url: str | None = None
+    text: str | None = None    # raw pasted text (used when url is None)
+
+
+class ImportedExample(BaseModel):
+    id: str
+    japanese: str
+    reading: str
+    translation: str
+
+
+class ImportedSentence(BaseModel):
+    id: str
+    japanese: str
+    reading: str
+    translation: str
+
+
+class ImportPreview(BaseModel):
+    title: str
+    grammar_point: str
+    jlpt_level: str
+    category: str
+    source_language: str
+    explanation: str
+    examples: list[ImportedExample]
+    sentences: list[ImportedSentence]
+
+
+@router.post("/import-url", response_model=ImportPreview)
+async def import_url(req: ImportRequest):
+    """
+    Fetch a URL (or accept pasted text), send the content to an LLM, and
+    return a structured lesson preview the user can review and edit before saving.
+    """
+    if not req.url and not req.text:
+        raise HTTPException(status_code=400, detail="Provide a URL or pasted text")
+
+    raw_text = req.text or ""
+
+    if req.url:
+        import httpx
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+                resp = await client.get(req.url)
+                resp.raise_for_status()
+                raw_text = resp.text
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to fetch URL: {exc}")
+
+    # Strip HTML tags for a rough plain-text extraction
+    import re as _re
+    plain = _re.sub(r"<[^>]+>", " ", raw_text)
+    plain = _re.sub(r"\s+", " ", plain).strip()
+    # Limit to ~6000 chars to fit in context
+    plain = plain[:6000]
+
+    system = (
+        "You are a Japanese lesson extractor. Given raw text from a grammar resource page, "
+        "extract a structured JSON lesson.\n\n"
+        "OUTPUT: Respond ONLY with a single JSON object — no text before or after.\n\n"
+        "JSON SCHEMA:\n"
+        "{\n"
+        '  "title": "short descriptive title in English",\n'
+        '  "grammar_point": "grammar pattern (e.g. N1のN2, V-てform)",\n'
+        '  "jlpt_level": "N5|N4|N3|N2|N1",\n'
+        '  "category": "grammar|vocabulary|conversation",\n'
+        '  "source_language": "en",\n'
+        '  "explanation": "clear explanation of the grammar point for a beginner, 2-4 sentences",\n'
+        '  "examples": [\n'
+        '    {"id": "ex_1", "japanese": "...", "reading": "hiragana reading", "translation": "English translation"},\n'
+        '    ... (3-5 examples)\n'
+        '  ],\n'
+        '  "sentences": [\n'
+        '    {"id": "s_1", "japanese": "...", "reading": "hiragana reading", "translation": "English translation"},\n'
+        '    ... (3-5 practice sentences)\n'
+        '  ]\n'
+        "}\n\n"
+        "RULES:\n"
+        "- Extract ONLY from the provided text. Do not invent content.\n"
+        "- If the text doesn't contain enough examples, generate simple ones that match the pattern.\n"
+        "- Use hiragana for readings. Use simple vocabulary appropriate to the JLPT level.\n"
+        "- Each example id must be unique (ex_1, ex_2, ...). Each sentence id must be unique (s_1, s_2, ...).\n"
+        "- Keep explanations beginner-friendly."
+    )
+    messages = [{"role": "user", "content": f"Extract a lesson from this content:\n\n{plain}"}]
+
+    raw_response = await llm_router.route("lesson", system, messages)
+
+    # Parse JSON from response
+    try:
+        cleaned = _re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_response.strip(), flags=_re.MULTILINE)
+        data = json.loads(cleaned)
+    except Exception:
+        raise HTTPException(status_code=502, detail="LLM returned invalid JSON. Try again or paste the text manually.")
+
+    # Validate and normalise
+    try:
+        return ImportPreview(
+            title=data.get("title", "Untitled Lesson"),
+            grammar_point=data.get("grammar_point", ""),
+            jlpt_level=data.get("jlpt_level", "N5"),
+            category=data.get("category", "grammar"),
+            source_language=data.get("source_language", "en"),
+            explanation=data.get("explanation", ""),
+            examples=[ImportedExample(**ex) for ex in data.get("examples", [])],
+            sentences=[ImportedSentence(**s) for s in data.get("sentences", [])],
         )
-        for l in lessons
-    ]
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"LLM output didn't match expected shape: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# POST /lessons — create a new lesson
+# ---------------------------------------------------------------------------
+
+class CreateLessonRequest(BaseModel):
+    title: str
+    grammar_point: str | None = None
+    jlpt_level: str = "N5"
+    category: str = "grammar"
+    source_language: str = "en"
+    explanation: str
+    examples: list[ImportedExample]
+    sentences: list[ImportedSentence]
+
+
+class CreateLessonResponse(BaseModel):
+    id: int
+    title: str
+
+
+@router.post("", response_model=CreateLessonResponse)
+async def create_lesson(req: CreateLessonRequest, db: Session = Depends(get_db)):
+    """Save a new lesson to the database."""
+    # Determine stage and order: place after all existing lessons in this category
+    last = (
+        db.query(Lesson)
+        .filter(Lesson.category == req.category)
+        .order_by(Lesson.stage.desc(), Lesson.order.desc())
+        .first()
+    )
+    if last:
+        stage = last.stage
+        order = last.order + 1
+    else:
+        stage = 1
+        order = 1
+
+    content_json = {
+        "grammar_point": req.grammar_point or "",
+        "source_language": req.source_language,
+        "explanation": req.explanation,
+        "examples": [ex.model_dump() for ex in req.examples],
+        "sentences": [s.model_dump() for s in req.sentences],
+    }
+
+    lesson = Lesson(
+        title=req.title,
+        jlpt_level=req.jlpt_level,
+        grammar_point=req.grammar_point,
+        category=req.category,
+        source_language=req.source_language,
+        stage=stage,
+        order=order,
+        content_md="",
+        content_json=content_json,
+    )
+    db.add(lesson)
+    db.commit()
+    db.refresh(lesson)
+
+    return CreateLessonResponse(id=lesson.id, title=lesson.title)
 
 
 # ---------------------------------------------------------------------------
 # POST /lessons/{id}/start
 # ---------------------------------------------------------------------------
 
-@router.post("/{lesson_id}/start", response_model=StartResponse)
+@router.post("/{lesson_id}/start")
 async def start_lesson(
     lesson_id: int,
     req: StartRequest,
@@ -201,58 +430,64 @@ async def start_lesson(
     """
     Start a lesson session. Creates LessonSession, enters the Presentation module,
     and returns the AI's opening explanation.
+    Streams heartbeat newlines while the LLM is working to keep the
+    TCP connection alive for slow local models.
     """
     lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found")
+    get_user_or_404(req.user_id, db)  # validate before streaming starts
 
-    user = get_user_or_404(req.user_id, db)
+    async def work() -> dict:
+        user = get_user_or_404(req.user_id, db)
 
-    # Build initial session_meta
-    session_meta = _make_session_meta()
+        # Build initial session_meta
+        session_meta = _make_session_meta()
 
-    # Generate the Presentation module's opening turn
-    system = presentation.build_system_prompt(lesson, user, session_meta["modules"]["presentation"])
-    opening_prompt = presentation.build_opening(lesson, user)
-    messages = [{"role": "user", "content": opening_prompt}]
+        # Generate the Presentation module's opening turn
+        system = presentation.build_system_prompt(lesson, user, session_meta["modules"]["presentation"])
+        opening_prompt = presentation.build_opening(lesson, user)
+        messages = [{"role": "user", "content": opening_prompt}]
 
-    text = await llm_router.route("lesson", system, messages)
-    text = text.strip()
+        text = await llm_router.route("lesson", system, messages)
+        text = text.strip()
 
-    # Seed history: only the assistant reply (the opening prompt is internal)
-    history = [{"role": "assistant", "content": text}]
+        # Seed history: only the assistant reply (the opening prompt is internal)
+        history = [{"role": "assistant", "content": text}]
 
-    # Advance module turn counter
-    session_meta["modules"]["presentation"]["turns"] += 1
+        # Advance module turn counter
+        session_meta["modules"]["presentation"]["turns"] += 1
 
-    session = LessonSession(
-        lesson_id=lesson_id,
-        user_id=req.user_id,
-        content_json=history,
-        session_meta=session_meta,
-        status="active",
-    )
-    db.add(session)
-    db.commit()
-    db.refresh(session)
+        session = LessonSession(
+            lesson_id=lesson_id,
+            user_id=req.user_id,
+            content_json=history,
+            session_meta=session_meta,
+            status="active",
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
 
-    tokens = _tokenize_lesson_text(text, req.user_id, db)
+        tokens = _tokenize_lesson_text(text, req.user_id, db, lesson=lesson)
 
-    return StartResponse(
-        session_id=session.id,
-        lesson_id=lesson_id,
-        text=text,
-        tokens=tokens,
-        session_meta=SessionMetaOut(**session.session_meta),
-        choices=[],
-    )
+        return StartResponse(
+            session_id=session.id,
+            lesson_id=lesson_id,
+            text=text,
+            tokens=tokens,
+            session_meta=SessionMetaOut(**session.session_meta),
+            choices=[],
+        ).model_dump()
+
+    return await stream_json(work())
 
 
 # ---------------------------------------------------------------------------
 # POST /lessons/session/{id}/continue
 # ---------------------------------------------------------------------------
 
-@router.post("/session/{session_id}/continue", response_model=ContinueResponse)
+@router.post("/session/{session_id}/continue")
 async def continue_lesson(
     session_id: int,
     req: ContinueRequest,
@@ -261,74 +496,85 @@ async def continue_lesson(
     """
     Continue the current lesson module with the user's input.
     Routes to the active module's system prompt, calls LLM, returns response.
+    Streams heartbeat newlines while the LLM is working to keep the
+    TCP connection alive for slow local models.
     """
+    # Fast validation — can raise HTTPException with proper status codes
     session, lesson, user = _load_session_context(session_id, req.user_id, db)
-
     meta = dict(session.session_meta or {})
     active = meta.get("active_module", _INITIAL_MODULE)
-    module = _MODULES.get(active)
-    if not module:
+    if active not in _MODULES:
         raise HTTPException(status_code=400, detail=f"Unknown module: {active}")
 
-    module_state = meta["modules"].get(active, {})
-    system = module.build_system_prompt(lesson, user, module_state)
+    async def work() -> dict:
+        nonlocal meta, active
+        module = _MODULES[active]
+        module_state = meta["modules"].get(active, {})
+        system = module.build_system_prompt(lesson, user, module_state)
 
-    # Determine if this is a "return" signal in QA mode
-    is_return = _is_return_signal(req.user_input)
-    if active == "qa" and is_return and meta.get("qa_return_module"):
-        # Switch back to origin module
-        return_to = meta["qa_return_module"]
-        meta["qa_return_module"] = None
-        meta["active_module"] = return_to
+        # Determine if this is a "return" signal in QA mode
+        is_return = _is_return_signal(req.user_input)
+        if active == "qa" and is_return and meta.get("qa_return_module"):
+            return_to = meta["qa_return_module"]
+            meta["qa_return_module"] = None
+            meta["active_module"] = return_to
+            session.session_meta = meta
+            flag_modified(session, "session_meta")
+            db.commit()
+            result = await _do_switch(session, lesson, user, return_to, meta, db)
+            d = result.model_dump()
+            d.setdefault("stage_complete", False)
+            return d
+
+        # Convert romaji input to Japanese for recognition/conversation modules
+        user_input = req.user_input
+        if active in ("recognition", "conversation") and is_romaji_heavy(user_input):
+            converted = await convert_to_japanese(user_input)
+            if converted != user_input:
+                user_input = converted
+
+        # Build messages: full history + user turn
+        history = list(session.content_json or [])
+        messages = [*history, {"role": "user", "content": user_input}]
+
+        # For the conversation module, parse JSON response like story builder
+        turn_choices: list[str] = []
+        if active == "conversation":
+            text, turn_choices = await _call_conversation_module(system, messages)
+        else:
+            raw = await llm_router.route("lesson", system, messages)
+            text = raw.strip()
+
+        updated_history = [*history, {"role": "user", "content": user_input}, {"role": "assistant", "content": text}]
+        session.content_json = updated_history
+
+        module_state = meta["modules"].setdefault(active, {})
+        module_state["turns"] = module_state.get("turns", 0) + 1
+
+        if active == "examples":
+            next_id = examples.next_unseen_id(lesson, module_state)
+            if next_id:
+                module_state.setdefault("seen_ids", []).append(next_id)
+
+        stage_complete = module.should_advance(module_state)
+
+        meta["modules"][active] = module_state
         session.session_meta = meta
         flag_modified(session, "session_meta")
         db.commit()
-        # Re-enter via switch so we get a proper module intro
-        return await _do_switch(session, lesson, user, return_to, meta, db)
 
-    # Build messages: full history + user turn
-    history = list(session.content_json or [])
-    messages = [*history, {"role": "user", "content": req.user_input}]
+        tokens = _tokenize_lesson_text(text, req.user_id, db, lesson=lesson)
 
-    # For the conversation module, parse JSON response like story builder
-    turn_choices: list[str] = []
-    if active == "conversation":
-        text, turn_choices = await _call_conversation_module(system, messages)
-    else:
-        raw = await llm_router.route("lesson", system, messages)
-        text = raw.strip()
+        return ContinueResponse(
+            session_id=session.id,
+            text=text,
+            tokens=tokens,
+            session_meta=SessionMetaOut(**session.session_meta),
+            stage_complete=stage_complete,
+            choices=turn_choices,
+        ).model_dump()
 
-    # Update history
-    updated_history = [*history, {"role": "user", "content": req.user_input}, {"role": "assistant", "content": text}]
-    session.content_json = updated_history
-
-    # Advance module turn counter
-    module_state = meta["modules"].setdefault(active, {})
-    module_state["turns"] = module_state.get("turns", 0) + 1
-
-    # Track seen example ids for the examples module
-    if active == "examples":
-        next_id = examples.next_unseen_id(lesson, module_state)
-        if next_id:
-            module_state.setdefault("seen_ids", []).append(next_id)
-
-    stage_complete = module.should_advance(module_state)
-
-    meta["modules"][active] = module_state
-    session.session_meta = meta
-    flag_modified(session, "session_meta")
-    db.commit()
-
-    tokens = _tokenize_lesson_text(text, req.user_id, db)
-
-    return ContinueResponse(
-        session_id=session.id,
-        text=text,
-        tokens=tokens,
-        session_meta=SessionMetaOut(**session.session_meta),
-        stage_complete=stage_complete,
-        choices=turn_choices,
-    )
+    return await stream_json(work())
 
 
 # ---------------------------------------------------------------------------
@@ -633,7 +879,7 @@ async def _do_switch(
     flag_modified(session, "session_meta")
     db.commit()
 
-    tokens = _tokenize_lesson_text(text, session.user_id, db)
+    tokens = _tokenize_lesson_text(text, session.user_id, db, lesson=lesson)
 
     return SwitchModuleResponse(
         session_id=session.id,
@@ -662,13 +908,26 @@ async def _call_conversation_module(system: str, messages: list[dict]) -> tuple[
     return raw.strip(), []
 
 
-def _tokenize_lesson_text(text: str, user_id: int, db: Session) -> list[TokenOut]:
+def _tokenize_lesson_text(
+    text: str,
+    user_id: int,
+    db: Session,
+    lesson: Lesson | None = None,
+) -> list[TokenOut]:
     """
     Tokenize the lesson response. Non-Japanese text tokenizes as individual
     surface tokens — the frontend decides how to render them.
+
+    When a lesson is provided, a second annotation pass marks tokens that match
+    the grammar target (e.g. the の particle) as ``lesson_example``.
     """
     tokens = tokenize(text)
     annotated = _annotate_with_vocab_status(tokens, user_id, db)
+
+    # Second pass: mark grammar target tokens as lesson_example
+    if lesson:
+        annotated = _annotate_lesson_targets(annotated, lesson)
+
     return [
         TokenOut(
             surface=t.surface,
@@ -680,6 +939,40 @@ def _tokenize_lesson_text(text: str, user_id: int, db: Session) -> list[TokenOut
         )
         for t in annotated
     ]
+
+
+def _annotate_lesson_targets(tokens: list, lesson: Lesson) -> list:
+    """
+    Mark tokens that match the lesson's grammar target as ``lesson_example``.
+
+    For particle-based lessons (e.g. N1のN2), marks every occurrence of the
+    target particle. For other grammar points, does a surface match against
+    the grammar_point string.
+    """
+    content = lesson.content_json or {}
+    grammar_point = content.get("grammar_point") or lesson.grammar_point or ""
+    if not grammar_point:
+        return tokens
+
+    # Extract the core particle/token to highlight
+    # Common patterns: "N1のN2" → highlight "の", "V-てform" → highlight "て"
+    target_surfaces: set[str] = set()
+
+    # For NxのNy style patterns, extract the particle
+    import re as _re
+    particle_match = _re.search(r"[NVA]\d?(.{1,3})[NVA]\d?", grammar_point)
+    if particle_match:
+        target_surfaces.add(particle_match.group(1))
+
+    # Also try direct match against the whole grammar_point for simpler cases
+    if not target_surfaces:
+        target_surfaces.add(grammar_point)
+
+    for token in tokens:
+        if token.surface in target_surfaces:
+            token.status = "lesson_example"
+
+    return tokens
 
 
 def _is_return_signal(text: str) -> bool:
