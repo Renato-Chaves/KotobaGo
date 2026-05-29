@@ -190,13 +190,26 @@ export interface Lesson {
 }
 
 // Module names matching the backend
-export type LessonModule = "presentation" | "examples" | "recognition" | "conversation" | "qa";
+export type LessonModule = "presentation" | "examples" | "recognition" | "translation" | "conversation" | "qa";
+
+export type TranslationGrade = "accept" | "close" | "wrong";
 
 export interface ModuleState {
   turns: number;
   seen_ids?: string[];
   scored_ids?: string[];
   exported?: boolean;
+  // Translation module fields
+  completed_ids?: string[];
+  current_index?: number;
+  phase?: "ask" | "grade" | "done";
+  last_grade_result?: TranslationGrade | null;
+  last_item_id?: string | null;
+}
+
+export interface TranslationTiebreakResponse {
+  result: "accept" | "wrong";
+  explanation: string;
 }
 
 export interface LessonSessionMeta {

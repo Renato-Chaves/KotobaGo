@@ -15,6 +15,7 @@ import type {
   StartLessonResponse,
   SwitchModuleResponse,
   Token,
+  TranslationGrade,
 } from "@/lib/types";
 import { ErrorPanel } from "@/components/story/ErrorPanel";
 import { StoryInput } from "@/components/story/StoryInput";
@@ -45,6 +46,11 @@ interface UserTurn {
   text: string;
   errors?: ErrorItem[] | null;
   overallFeedback?: string;
+  // Translation-module-only annotations
+  translationGrade?: TranslationGrade;
+  translationItemId?: string;
+  tiebreakResult?: "accept" | "wrong" | "pending";
+  tiebreakExplanation?: string;
 }
 
 type Turn = AssistantTurn | UserTurn;
@@ -194,6 +200,25 @@ export function LessonCanvas({ lessonId }: Props) {
       const res: ContinueLessonResponse = await api.continueLesson(sessionId, { user_input: input }, ctrl.signal);
       setSessionMeta(res.session_meta);
 
+      // If we were in the translation module, the response carries a grade
+      // for the user input we just submitted. Annotate that user turn so the
+      // "I think mine is also right" button can render below it.
+      const translationState = res.session_meta.modules.translation;
+      if (
+        translationState?.last_grade_result &&
+        translationState.last_item_id
+      ) {
+        const grade = translationState.last_grade_result;
+        const itemId = translationState.last_item_id;
+        setTurns((prev) =>
+          prev.map((t, i) =>
+            i === userTurnIndex && t.role === "user"
+              ? { ...t, translationGrade: grade, translationItemId: itemId }
+              : t
+          )
+        );
+      }
+
       const assistantTurn = toAssistantTurn(
         res.text, res.tokens, res.session_meta.active_module, res.choices, res.stage_complete
       );
@@ -244,6 +269,40 @@ export function LessonCanvas({ lessonId }: Props) {
       );
     }
   }, [sessionId]);
+
+  // --- Translation tiebreak ---
+
+  const runTranslationTiebreak = useCallback(async (turnIndex: number) => {
+    if (!sessionId) return;
+    const turn = turns[turnIndex];
+    if (!turn || turn.role !== "user" || !turn.translationItemId) return;
+
+    setTurns((prev) =>
+      prev.map((t, i) =>
+        i === turnIndex && t.role === "user"
+          ? { ...t, tiebreakResult: "pending" }
+          : t
+      )
+    );
+    try {
+      const res = await api.translationTiebreak(sessionId, turn.translationItemId, turn.text);
+      setTurns((prev) =>
+        prev.map((t, i) =>
+          i === turnIndex && t.role === "user"
+            ? { ...t, tiebreakResult: res.result, tiebreakExplanation: res.explanation }
+            : t
+        )
+      );
+    } catch {
+      setTurns((prev) =>
+        prev.map((t, i) =>
+          i === turnIndex && t.role === "user"
+            ? { ...t, tiebreakResult: undefined }
+            : t
+        )
+      );
+    }
+  }, [sessionId, turns]);
 
   // --- Text selection → word sidebar ---
 
@@ -447,13 +506,37 @@ export function LessonCanvas({ lessonId }: Props) {
             if (turn.role === "user") {
               const hasResult = turn.errors !== undefined;
               const isAnalysisLoading = turn.errors === null;
+              const showTiebreakButton =
+                (turn.translationGrade === "wrong" || turn.translationGrade === "close")
+                && turn.tiebreakResult === undefined;
+              const tiebreakPending = turn.tiebreakResult === "pending";
+              const tiebreakFinal = turn.tiebreakResult === "accept" || turn.tiebreakResult === "wrong";
               return (
                 <div key={i} className="flex flex-col items-end gap-1">
                   <div className="max-w-[75%] px-4 py-2.5 rounded-2xl rounded-tr-sm
                                   bg-sky-700 text-white text-base leading-relaxed">
                     {turn.text}
                   </div>
-                  {errorMode === "on_call" && !hasResult && !isAnalysisLoading && (
+                  {showTiebreakButton && (
+                    <button
+                      onClick={() => runTranslationTiebreak(i)}
+                      className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors mr-1"
+                    >
+                      I think mine is also right →
+                    </button>
+                  )}
+                  {tiebreakPending && (
+                    <span className="text-xs text-zinc-500 mr-1">Checking…</span>
+                  )}
+                  {tiebreakFinal && (
+                    <div className={`text-xs mr-1 max-w-[85%] text-right
+                      ${turn.tiebreakResult === "accept" ? "text-emerald-400" : "text-zinc-500"}
+                    `}>
+                      {turn.tiebreakResult === "accept" ? "✓ Accepted on review" : "✗ Original grade stands"}
+                      {turn.tiebreakExplanation ? ` — ${turn.tiebreakExplanation}` : ""}
+                    </div>
+                  )}
+                  {errorMode === "on_call" && !hasResult && !isAnalysisLoading && !turn.translationGrade && (
                     <button
                       onClick={() => runErrorAnalysis(i, turn.text)}
                       className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors mr-1"
@@ -544,7 +627,7 @@ export function LessonCanvas({ lessonId }: Props) {
             {/* Mobile stage nav + export button */}
             {sessionMeta && (
               <div className="flex md:hidden gap-2 mb-3 overflow-x-auto pb-1">
-                {(["presentation", "examples", "recognition", "conversation"] as LessonModule[]).map((mod) => {
+                {(["presentation", "examples", "recognition", "translation", "conversation"] as LessonModule[]).map((mod) => {
                   const isActive = sessionMeta.active_module === mod;
                   return (
                     <button
@@ -626,13 +709,17 @@ function moduleLabel(module: LessonModule): string {
     presentation: "📖 Intro",
     examples:     "💡 Examples",
     recognition:  "✅ Recognition",
-    conversation: "💬 Practice",
+    translation:  "🔤 Translation",
+    conversation: "💬 Practice (bonus)",
     qa:           "❓ Q&A",
   };
   return labels[module] ?? module;
 }
 
-const MODULE_ORDER: LessonModule[] = ["presentation", "examples", "recognition", "conversation"];
+// Auto-advance chain. Conversation is excluded — it's an optional bonus stage
+// the user can navigate to manually but the lesson is "done" once translation
+// finishes.
+const MODULE_ORDER: LessonModule[] = ["presentation", "examples", "recognition", "translation"];
 
 function getNextModule(current: LessonModule): LessonModule | null {
   const idx = MODULE_ORDER.indexOf(current);

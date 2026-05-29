@@ -13,6 +13,7 @@ Session flow:
 
 import json
 import re
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -22,7 +23,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from core.error_analyzer import analyze_errors as _run_error_analysis
 from core.llm import router as llm_router
 from core.streaming import stream_json
-from core.modules import conversation, examples, presentation, qa, recognition
+from core.modules import conversation, examples, presentation, qa, recognition, translation
 from core.romaji import convert_to_japanese, is_romaji_heavy
 from core.story_builder import get_user_or_404
 from core.tokenizer import tokenize
@@ -49,6 +50,7 @@ _MODULES = {
     "presentation": presentation,
     "examples":     examples,
     "recognition":  recognition,
+    "translation":  translation,
     "conversation": conversation,
     "qa":           qa,
 }
@@ -526,7 +528,9 @@ async def continue_lesson(
             d.setdefault("stage_complete", False)
             return d
 
-        # Convert romaji input to Japanese for recognition/conversation modules
+        # Convert romaji input to Japanese for recognition/conversation modules.
+        # Translation handles its own romaji conversion inside grade() — only when
+        # the current item's direction is NL→JP.
         user_input = req.user_input
         if active in ("recognition", "conversation") and is_romaji_heavy(user_input):
             converted = await convert_to_japanese(user_input)
@@ -537,10 +541,13 @@ async def continue_lesson(
         history = list(session.content_json or [])
         messages = [*history, {"role": "user", "content": user_input}]
 
-        # For the conversation module, parse JSON response like story builder
+        # For the conversation module, parse JSON response like story builder.
+        # Translation bypasses the LLM entirely — pure template + Python grading.
         turn_choices: list[str] = []
         if active == "conversation":
             text, turn_choices = await _call_conversation_module(system, messages)
+        elif active == "translation":
+            text = await translation.handle_continue(lesson, user, module_state, req.user_input)
         else:
             raw = await llm_router.route("lesson", system, messages)
             text = raw.strip()
@@ -641,6 +648,104 @@ async def analyze_errors_endpoint(
         errors=[ErrorItem(**e) for e in result["errors"]],
         overall_feedback=result["overall_feedback"],
         converted_input=result.get("converted"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /lessons/session/{id}/translation-tiebreak
+# ---------------------------------------------------------------------------
+
+class TiebreakRequest(BaseModel):
+    user_id: int = 1
+    item_id: str
+    user_input: str
+
+
+class TiebreakResponse(BaseModel):
+    result: Literal["accept", "wrong"]
+    explanation: str
+
+
+@router.post("/session/{session_id}/translation-tiebreak", response_model=TiebreakResponse)
+async def translation_tiebreak(
+    session_id: int,
+    req: TiebreakRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Resolve a disputed automatic grade from the translation module.
+
+    The translation module grades answers in Python via strict-match. When the
+    learner believes their answer is also valid, they trigger this endpoint and
+    the LLM judges the case. The result is returned without mutating session
+    state — it's a UI-only annotation on the existing turn.
+    """
+    session = db.query(LessonSession).filter(LessonSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    lesson = db.query(Lesson).filter(Lesson.id == session.lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    user = get_user_or_404(req.user_id, db)
+
+    pool = translation.build_pool(lesson)
+    item = next((p for p in pool if p.get("id") == req.item_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found in lesson translation pool")
+
+    idx = pool.index(item)
+    direction = translation.direction_for_index(idx)
+
+    lang = user.native_language or "en"
+    lang_name = _LANG_NAMES.get(lang, "English")
+
+    if direction == "jp_to_nl":
+        prompt_side = item.get("japanese", "")
+        authored_side = item.get("translation", "")
+        direction_label = f"Japanese → {lang_name}"
+    else:
+        prompt_side = item.get("translation", "")
+        authored_side = item.get("japanese", "")
+        direction_label = f"{lang_name} → Japanese"
+
+    system = (
+        f"You are a Japanese translation grader. The learner is disputing an automatic grade.\n"
+        f"Be lenient but accurate: if the learner's answer is a valid translation of the prompt — "
+        f"even if it differs in word choice from the authored answer — accept it.\n"
+        f"LANGUAGE: Write your explanation in {lang_name}.\n"
+        f"OUTPUT: Respond with valid JSON only, no preamble:\n"
+        f'{{"acceptable": true, "explanation": "one short sentence"}}\n'
+        f"or\n"
+        f'{{"acceptable": false, "explanation": "one short sentence saying what is off"}}'
+    )
+    user_msg = (
+        f"Direction: {direction_label}\n"
+        f"Prompt:           {prompt_side}\n"
+        f"Authored answer:  {authored_side}\n"
+        f"Learner's answer: {req.user_input}"
+    )
+    messages = [{"role": "user", "content": user_msg}]
+
+    try:
+        raw = await llm_router.route("lesson", system, messages)
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+        data = json.loads(cleaned)
+        acceptable = bool(data.get("acceptable"))
+        explanation = str(data.get("explanation", "")).strip()
+    except Exception:
+        acceptable = False
+        explanation = ""
+
+    if not explanation:
+        explanation = (
+            "Your answer also looks acceptable."
+            if acceptable
+            else "Couldn't verify — the authored answer stands."
+        )
+
+    return TiebreakResponse(
+        result="accept" if acceptable else "wrong",
+        explanation=explanation,
     )
 
 
@@ -811,6 +916,7 @@ def _make_session_meta() -> dict:
             "presentation": presentation.initial_state(),
             "examples":     examples.initial_state(),
             "recognition":  recognition.initial_state(),
+            "translation":  translation.initial_state(),
             "conversation": conversation.initial_state(),
             "qa":           qa.initial_state(),
         },
@@ -856,17 +962,21 @@ async def _do_switch(
     module = _MODULES[target_module]
     module_state = meta["modules"].get(target_module, module.initial_state())
 
-    # Generate the module's opening/intro message
-    system = module.build_system_prompt(lesson, user, module_state)
-    opening_prompt = module.build_opening(lesson, user)
-    messages = [{"role": "user", "content": opening_prompt}]
-
     switch_choices: list[str] = []
-    if target_module == "conversation":
-        text, switch_choices = await _call_conversation_module(system, messages)
+    if target_module == "translation":
+        # Translation: pure template, no LLM call.
+        text = translation.build_opening_text(lesson, user, module_state)
     else:
-        raw = await llm_router.route("lesson", system, messages)
-        text = raw.strip()
+        # Generate the module's opening/intro message
+        system = module.build_system_prompt(lesson, user, module_state)
+        opening_prompt = module.build_opening(lesson, user)
+        messages = [{"role": "user", "content": opening_prompt}]
+
+        if target_module == "conversation":
+            text, switch_choices = await _call_conversation_module(system, messages)
+        else:
+            raw = await llm_router.route("lesson", system, messages)
+            text = raw.strip()
 
     # Append module switch marker + AI intro to history
     updated_history = list(session.content_json or [])

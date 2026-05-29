@@ -14,10 +14,11 @@ interface StageConfig {
 }
 
 const STAGES: StageConfig[] = [
-  { module: "presentation", label: "Intro",       icon: "📖", shortLabel: "Intro" },
-  { module: "examples",     label: "Examples",    icon: "💡", shortLabel: "Examples" },
-  { module: "recognition",  label: "Recognition", icon: "✅", shortLabel: "Recognition" },
-  { module: "conversation", label: "Practice",    icon: "💬", shortLabel: "Practice" },
+  { module: "presentation", label: "Intro",            icon: "📖", shortLabel: "Intro" },
+  { module: "examples",     label: "Examples",         icon: "💡", shortLabel: "Examples" },
+  { module: "recognition",  label: "Recognition",      icon: "✅", shortLabel: "Recognition" },
+  { module: "translation",  label: "Translation",      icon: "🔤", shortLabel: "Translation" },
+  { module: "conversation", label: "Practice (bonus)", icon: "💬", shortLabel: "Bonus" },
 ];
 
 // ---------------------------------------------------------------------------

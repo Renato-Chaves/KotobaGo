@@ -1,4 +1,4 @@
-import type { AvailableModelsResponse, ContinueLessonResponse, ConfidenceRating, CreateLessonRequest, CreateLessonResponse, ErrorAnalysisResponse, ExportToStoryResponse, ImportPreview, ImportUrlRequest, Lesson, LessonModule, LessonSummaryResponse, SessionSummaryResponse, StartLessonResponse, StoryResponse, SwitchModuleResponse, Token, UpdateProfileRequest, UserProfile, VocabGridResponse, WordLookup } from "./types";
+import type { AvailableModelsResponse, ContinueLessonResponse, ConfidenceRating, CreateLessonRequest, CreateLessonResponse, ErrorAnalysisResponse, ExportToStoryResponse, ImportPreview, ImportUrlRequest, Lesson, LessonModule, LessonSummaryResponse, SessionSummaryResponse, StartLessonResponse, StoryResponse, SwitchModuleResponse, Token, TranslationTiebreakResponse, UpdateProfileRequest, UserProfile, VocabGridResponse, WordLookup } from "./types";
 
 // In Client Components this env var is available (NEXT_PUBLIC_ prefix).
 // Server Components use API_URL_INTERNAL instead.
@@ -153,6 +153,13 @@ export const api = {
     user_input: string
   ): Promise<ErrorAnalysisResponse> =>
     post(`/lessons/session/${session_id}/analyze-errors`, { session_id, user_input, user_id: 1 }),
+
+  translationTiebreak: (
+    session_id: number,
+    item_id: string,
+    user_input: string,
+  ): Promise<TranslationTiebreakResponse> =>
+    post(`/lessons/session/${session_id}/translation-tiebreak`, { user_id: 1, item_id, user_input }),
 
   getLessonSummary: (session_id: number): Promise<LessonSummaryResponse> =>
     post(`/lessons/session/${session_id}/summary`, { user_id: 1 }),
